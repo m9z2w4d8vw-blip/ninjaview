@@ -10,6 +10,7 @@ struct ProfileScreen: View {
     @ObservedObject private var engine: ProfileEngine
     @ObservedObject private var center = CrawlCenter.shared
     @ObservedObject private var archives = ProfileStore.archive
+    @ObservedObject private var watch = WatchCenter.shared
     @EnvironmentObject private var app: AppModel
     @EnvironmentObject private var downloads: DownloadCenter
     @State private var panel: ProfilePanel? = nil
@@ -160,6 +161,13 @@ struct ProfileScreen: View {
             }
             .buttonStyle(InstaButtonStyle())
             archiveButton(header)
+            Button { toggleWatch(header) } label: {
+                Image(systemName: watch.isWatched(header.handle) ? "bell.fill" : "bell")
+                    .foregroundStyle(watch.isWatched(header.handle) ? Color.nvSignal : Color.nvInk)
+            }
+            .buttonStyle(InstaButtonStyle())
+            .frame(width: 40)
+            .accessibilityLabel(watch.isWatched(header.handle) ? "Stop watching" : "Notify me about new posts")
             Button { openAnalytics() } label: { Image(systemName: "chart.bar") }
                 .buttonStyle(InstaButtonStyle())
                 .frame(width: 40)
@@ -255,6 +263,17 @@ struct ProfileScreen: View {
         CrawlCenter.shared.prefetch(header.handle)
         await engine.load(.stories)
         await engine.load(.highlights)
+    }
+
+    private func toggleWatch(_ header: ProfileHeader) {
+        Task {
+            if let watching = await watch.toggle(header) {
+                downloads.show(.success, watching ? "You'll be notified about @\(header.handle)'s new posts" : "Stopped watching @\(header.handle)")
+                if watching { UIImpactFeedbackGenerator(style: .light).impactOccurred() }
+            } else {
+                downloads.show(.failure, "Turn on notifications for NinjaView in iOS Settings first.")
+            }
+        }
     }
 
     private func openAnalytics() {

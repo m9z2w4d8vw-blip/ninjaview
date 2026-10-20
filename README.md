@@ -30,6 +30,12 @@ If the build fails, open the failed run. The **Summarize compiler errors** step 
 - Under each post: comments (with reply threads), share, audio (through tik.ninja's own download) and save to Photos. The ... menu has the same, plus copying the caption. Tapping an @mention in a caption opens that profile.
 - Tapping a follower, a followed account or a commenter opens their profile.
 
+### New-post notifications
+
+Turn on the bell on a profile to watch it. NinjaView checks your watched accounts and notifies you when they post. It checks each time you open the app, and in the background when iOS wakes it — which iOS schedules itself, usually a few times a day rather than on a fixed hour, and never while the app is force-quit. Keep **Background App Refresh** on for NinjaView in iOS Settings, and allow notifications when asked. Manage the list, or tap **Check now**, under **Settings > Notifications > Watched accounts**. A background check reads each account's post count (and newest post when there's time) and only notifies on something new.
+
+A phone can't run an app on a strict hourly timer without a jailbreak, so if you need exact hourly checks, a small script on an always-on computer is the reliable route — ask and I can put one together.
+
 ### Offline copy for the session
 
 Opening a profile starts a background download of everything on it: posts, reposts, stories and highlights (video files, photos and covers), comments with their reply threads, follower and following lists, and analytics. A line under the profile's buttons shows progress. Posts that have finished play from the phone. The copy is erased when NinjaView closes. It runs on its own hidden page, one profile at a time, newest first. Turn it off, or leave out comments or lists, in **Settings > Offline**.

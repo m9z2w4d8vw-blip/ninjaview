@@ -36,7 +36,9 @@ struct NinjaViewApp: App {
                 DebugLog.shared.add(.app, "Thermal state is now \(Diagnostics.thermal(ProcessInfo.processInfo.thermalState))")
             }
         }
+        NotificationManager.shared.configure()
         WebFactory.shared.warmUp()
+        WatchCenter.shared.schedule()
     }
 
     var body: some Scene {
@@ -49,6 +51,10 @@ struct NinjaViewApp: App {
                 .environmentObject(avatars)
                 .tint(Color.nvInk)
                 .onOpenURL { app.handleDeepLink($0) }
+        }
+        // iOS runs this when it next decides to wake the app (not on a fixed clock).
+        .backgroundTask(.appRefresh(WatchTask.refreshID)) {
+            await WatchCenter.shared.runBackgroundCheck()
         }
     }
 }

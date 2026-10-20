@@ -9,6 +9,7 @@ struct SettingsView: View {
     @State private var confirmingClear = false
     @State private var confirmingDeleteArchives = false
     @ObservedObject private var archives = ProfileStore.archive
+    @ObservedObject private var watch = WatchCenter.shared
 
     var body: some View {
         NavigationStack {
@@ -66,6 +67,19 @@ struct SettingsView: View {
                         }
                 } footer: {
                     Text("Archives are also in the Files app, under On My iPhone > NinjaView > Archives.")
+                }
+
+                Section {
+                    Toggle("New-post notifications", isOn: Binding(
+                        get: { watch.enabled },
+                        set: { on in Task { await watch.setEnabled(on) } }))
+                    if !watch.watched.isEmpty {
+                        NavigationLink("Watched accounts (\(watch.count))") { WatchListView() }
+                    }
+                } header: {
+                    Text("Notifications")
+                } footer: {
+                    Text("Turn on the bell on a profile to watch it. NinjaView checks your watched accounts when iOS wakes it in the background \u{2014} usually a few times a day, not on a fixed schedule, and not while the app is force-quit \u{2014} and each time you open it, and notifies you about new posts. For the background checks, keep Background App Refresh on for NinjaView in iOS Settings.")
                 }
 
                 Section {

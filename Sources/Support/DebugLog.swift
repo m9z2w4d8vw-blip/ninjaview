@@ -22,7 +22,7 @@ final class DebugLog: ObservableObject {
     }
 
     enum Category: String, CaseIterable {
-        case app, nav, web, js, net, crawl, download, player, image, store
+        case app, nav, web, js, net, crawl, download, player, image, store, watch
     }
 
     struct Entry: Identifiable {

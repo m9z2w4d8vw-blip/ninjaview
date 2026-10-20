@@ -49,6 +49,7 @@ enum Diagnostics {
         }
         lines.append("Settings: appearance \(settings.appearance.rawValue), history \(onOff(settings.keepHistory)), ad blocking \(onOff(settings.blockAds)), tidy page \(onOff(settings.cleanLayout)), offline copies \(onOff(settings.prefetch)), comments \(onOff(settings.saveComments)), follower lists \(onOff(settings.saveLists))")
         lines.append("Open: \(EngineRegistry.shared.count) profile pages, \(FeedRegistry.shared.count) post lists")
+        lines.append("Watching: \(WatchCenter.shared.count) accounts, notifications \(onOff(WatchCenter.shared.enabled))")
         let crawls = CrawlCenter.shared.crawls.values
             .sorted { $0.id < $1.id }
             .map { "\($0.mode.rawValue) @\($0.handle) \(describe($0.state)) \($0.postsDone)/\($0.postsTotal)" }
