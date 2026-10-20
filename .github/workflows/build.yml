@@ -1,0 +1,106 @@
+name: Build unsigned IPA
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+  workflow_dispatch:
+
+# Needed for the release step to create tags and upload the IPA.
+permissions:
+  contents: write
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ipa:
+    runs-on: macos-15
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+
+      - name: Check repo layout
+        run: |
+          missing=0
+          for p in project.yml Config/Info.plist Sources/App/NinjaViewApp.swift Resources/Assets.xcassets; do
+            if [ ! -e "$p" ]; then
+              echo "::error::$p is missing at the repo root. Copy the zip's contents (not the folder around them) into your clone."
+              missing=1
+            fi
+          done
+          exit $missing
+
+      - name: Show Xcode version
+        run: xcodebuild -version
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate Xcode project
+        run: xcodegen generate
+
+      - name: Build for device (unsigned)
+        run: |
+          set -o pipefail
+          xcodebuild \
+            -project NinjaView.xcodeproj \
+            -scheme NinjaView \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath build \
+            CODE_SIGN_IDENTITY="" \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGNING_ALLOWED=NO \
+            CURRENT_PROJECT_VERSION=${{ github.run_number }} \
+            build 2>&1 | tee xcodebuild.log
+
+      - name: Summarize compiler errors
+        if: failure()
+        run: |
+          if [ -f xcodebuild.log ]; then
+            echo "### Compiler errors" >> "$GITHUB_STEP_SUMMARY"
+            grep -E "error:" xcodebuild.log | sort -u | head -80 | sed 's/^/    /' | tee -a "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Package IPA
+        id: package
+        run: |
+          APP="build/Build/Products/Release-iphoneos/NinjaView.app"
+          if [ ! -d "$APP" ]; then
+            echo "::error::NinjaView.app wasn't found at $APP"
+            exit 1
+          fi
+          rm -rf Payload && mkdir Payload
+          cp -R "$APP" Payload/
+          IPA="NinjaView-b${{ github.run_number }}.ipa"
+          zip -qry "$IPA" Payload
+          VERSION=$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" Payload/NinjaView.app/Info.plist)
+          BUILD=$(/usr/libexec/PlistBuddy -c "Print :CFBundleVersion" Payload/NinjaView.app/Info.plist)
+          echo "Packaged $IPA, version $VERSION, build $BUILD"
+          echo "ipa=$IPA" >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "size=$(du -h "$IPA" | cut -f1)" >> "$GITHUB_OUTPUT"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: NinjaView-ipa
+          path: ${{ steps.package.outputs.ipa }}
+          if-no-files-found: error
+
+      - name: Publish release
+        if: github.event_name == 'push'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: build-${{ github.run_number }}
+          name: NinjaView ${{ steps.package.outputs.version }} (build ${{ github.run_number }})
+          files: ${{ steps.package.outputs.ipa }}
+          make_latest: true
+          body: |
+            Unsigned build for TrollStore. Requires iOS 17.0 or later. ${{ steps.package.outputs.size }}.
+
+            Download the .ipa on your iPhone, open it in TrollStore, and tap Install.
+            Commit ${{ github.sha }}.
