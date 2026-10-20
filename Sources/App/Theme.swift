@@ -12,6 +12,8 @@ enum Palette {
     static let signal = dynamic(light: 0xFF2D55, dark: 0xFF375F)
     /// Second stop of the story ring.
     static let ember = dynamic(light: 0xFF8A00, dark: 0xFF9F0A)
+    /// Hashtags, mentions and carousel dots.
+    static let link = dynamic(light: 0x00376B, dark: 0xE0F1FF)
 
     private static func dynamic(light: UInt32, dark: UInt32) -> UIColor {
         UIColor { traits in UIColor(hex: traits.userInterfaceStyle == .dark ? dark : light) }
@@ -34,6 +36,7 @@ extension Color {
     static let nvRule = Color(uiColor: Palette.rule)
     static let nvMuted = Color(uiColor: Palette.muted)
     static let nvSignal = Color(uiColor: Palette.signal)
+    static let nvLink = Color(uiColor: Palette.link)
 }
 
 extension Font {

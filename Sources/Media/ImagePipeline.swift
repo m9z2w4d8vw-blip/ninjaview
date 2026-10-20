@@ -55,11 +55,21 @@ final class ImagePipeline {
         }
         do {
             let (data, response) = try await session.data(for: request)
-            if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) { return nil }
-            guard let image = Self.downsample(data, maxPixel: maxPixel) else { return nil }
+            if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
+                DebugLog.shared.warn(.image, "Image answered \(http.statusCode) from \(url.host ?? "?")")
+                return nil
+            }
+            guard let image = Self.downsample(data, maxPixel: maxPixel) else {
+                DebugLog.shared.warn(.image, "Couldn't decode an image from \(url.host ?? "?") (\(data.count) bytes)")
+                return nil
+            }
             cache.setObject(image, forKey: url as NSURL)
             return image
         } catch {
+            // Cells scrolling away cancel their loads; those aren't failures.
+            if !(error is CancellationError) && (error as? URLError)?.code != .cancelled {
+                DebugLog.shared.warn(.image, "Image from \(url.host ?? "?") failed: \(error.localizedDescription)")
+            }
             return nil
         }
     }

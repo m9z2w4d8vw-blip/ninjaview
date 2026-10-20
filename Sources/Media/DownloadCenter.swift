@@ -23,7 +23,7 @@ struct Toast: Identifiable, Equatable {
     let text: String
 }
 
-/// Presents the system share sheet from whatever is on top (profile, post viewer or sheet).
+/// Presents the system share sheet from whatever is on top (a profile, a sheet).
 @MainActor
 enum ShareSheet {
     static func present(_ url: URL) {
@@ -40,8 +40,9 @@ enum ShareSheet {
     }
 }
 
-/// Saves media to Photos. Videos and photos come straight from their CDN URLs;
-/// audio goes through tik.ninja's own download and lands in the share sheet.
+/// Saves media to Photos or hands it to the share sheet. Videos and photos come from
+/// their CDN URLs or from the phone (downloaded copies); audio goes through tik.ninja's
+/// own download and lands in the share sheet.
 @MainActor
 final class DownloadCenter: NSObject, ObservableObject {
     static let shared = DownloadCenter()
@@ -93,23 +94,58 @@ final class DownloadCenter: NSObject, ObservableObject {
         }
     }
 
+    /// Gets the file (downloading it if needed) and opens the share sheet, without saving to Photos.
+    func share(_ url: URL, kind: MediaKind, baseName: String) {
+        Task {
+            show(.working, "Preparing the \(kind.noun)…")
+            guard let file = await localCopy(of: url, baseName: baseName) else {
+                show(.failure, "Couldn't get the \(kind.noun) to share.")
+                return
+            }
+            toast = nil
+            DebugLog.shared.add(.download, "Sharing \(file.lastPathComponent)")
+            ShareSheet.present(file)
+        }
+    }
+
     private func retrieve(_ url: URL, kind: MediaKind, baseName: String, announce: Bool) async -> Bool {
         if announce { show(.working, "Downloading \(kind.noun)…") }
-        DebugLog.shared.add(.download, "Fetching \(kind.rawValue) from \(url.host ?? "?")")
-        do {
-            var request = URLRequest(url: url)
-            request.setValue(WebFactory.userAgent, forHTTPHeaderField: "User-Agent")
-            let (temp, response) = try await session.download(for: request)
-            if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
-                try? FileManager.default.removeItem(at: temp)
-                throw MediaError.http(http.statusCode)
-            }
-            let file = try MediaFiles.place(temp, baseName: baseName, suggestedName: response.suggestedFilename, mimeType: response.mimeType)
-            return await deliver(file, hint: kind, announce: announce)
-        } catch {
-            DebugLog.shared.add(.download, "Fetch failed: \(error.localizedDescription)")
-            if announce { show(.failure, "Download failed. \(error.localizedDescription)") }
+        let started = Date()
+        guard let file = await localCopy(of: url, baseName: baseName) else {
+            if announce { show(.failure, "Download failed. Settings › Debug log has the details.") }
             return false
+        }
+        let size = ((try? FileManager.default.attributesOfItem(atPath: file.path))?[.size] as? NSNumber)?.int64Value ?? 0
+        DebugLog.shared.add(.download, "Got \(file.lastPathComponent), \(ByteCountFormatter.string(fromByteCount: size, countStyle: .file)), in \(Int(Date().timeIntervalSince(started) * 1000)) ms")
+        return await deliver(file, hint: kind, announce: announce)
+    }
+
+    /// A copy of the media in the temporary folder, named by what its bytes turn out to be.
+    private func localCopy(of url: URL, baseName: String) async -> URL? {
+        do {
+            let temp: URL
+            var suggested: String? = url.lastPathComponent
+            var mime: String?
+            if url.isFileURL {
+                temp = FileManager.default.temporaryDirectory.appendingPathComponent("copy-\(UUID().uuidString)")
+                try FileManager.default.copyItem(at: url, to: temp)
+            } else {
+                var request = URLRequest(url: url)
+                request.setValue(WebFactory.userAgent, forHTTPHeaderField: "User-Agent")
+                let (downloaded, response) = try await session.download(for: request)
+                if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
+                    try? FileManager.default.removeItem(at: downloaded)
+                    throw MediaError.http(http.statusCode)
+                }
+                temp = downloaded
+                suggested = response.suggestedFilename
+                mime = response.mimeType
+            }
+            return try MediaFiles.place(temp, baseName: baseName, suggestedName: suggested, mimeType: mime)
+        } catch {
+            let source = url.isFileURL ? url.lastPathComponent : (url.host ?? "?")
+            DebugLog.shared.error(.download, "Couldn't get \(source): \(error.localizedDescription)")
+            return nil
         }
     }
 
@@ -128,6 +164,7 @@ final class DownloadCenter: NSObject, ObservableObject {
     private func saveToPhotos(_ file: URL, kind: MediaKind, announce: Bool) async -> Bool {
         let status = await PHPhotoLibrary.requestAuthorization(for: .addOnly)
         guard status == .authorized || status == .limited else {
+            DebugLog.shared.warn(.download, "Photos access isn't allowed (status \(status.rawValue))")
             show(.failure, "Photos access is off, so choose where to save it.")
             ShareSheet.present(file)
             return false
@@ -150,7 +187,7 @@ final class DownloadCenter: NSObject, ObservableObject {
             }
             return true
         } catch {
-            DebugLog.shared.add(.download, "Photos save failed: \(error.localizedDescription)")
+            DebugLog.shared.error(.download, "Photos refused \(file.lastPathComponent): \(error.localizedDescription)")
             if announce {
                 show(.failure, "Couldn't add it to Photos, so choose where to save it.")
                 ShareSheet.present(file)
@@ -175,6 +212,7 @@ extension DownloadCenter: WKDownloadDelegate {
             try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
             let destination = folder.appendingPathComponent(MediaFiles.sanitize(suggestedFilename, fallback: "download"))
             destinations[ObjectIdentifier(download)] = destination
+            DebugLog.shared.add(.download, "Site download: \(suggestedFilename), \(response.mimeType ?? "unknown type")")
             completionHandler(destination)
         } catch {
             completionHandler(nil)
@@ -198,7 +236,7 @@ extension DownloadCenter: WKDownloadDelegate {
     func download(_ download: WKDownload, didFailWithError error: Error, resumeData: Data?) {
         active.remove(download)
         destinations.removeValue(forKey: ObjectIdentifier(download))
-        DebugLog.shared.add(.download, "Site download failed: \(error.localizedDescription)")
+        DebugLog.shared.error(.download, "Site download failed: \(error.localizedDescription)")
         show(.failure, "Download failed. \(error.localizedDescription)")
     }
 }

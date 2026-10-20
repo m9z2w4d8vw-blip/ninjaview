@@ -11,7 +11,7 @@ struct Route: Hashable, Identifiable {
     var kind: Kind = .live
 
     enum Kind: Hashable {
-        case live, archive
+        case live, archive, posts
     }
 }
 
@@ -20,8 +20,12 @@ final class AppModel: ObservableObject {
     static let shared = AppModel()
 
     @Published var path: [Route] = [] {
-        // Each profile screen owns an off-screen page; drop the ones no longer on the stack.
-        didSet { EngineRegistry.shared.prune(keeping: Set(path.map(\.id))) }
+        // Profile screens own off-screen pages and post lists own a player; close the ones no longer on the stack.
+        didSet {
+            let ids = Set(path.map(\.id))
+            EngineRegistry.shared.prune(keeping: ids)
+            FeedRegistry.shared.prune(keeping: ids)
+        }
     }
     @Published private(set) var saved: [SavedProfile]
     @Published private(set) var history: [SavedProfile]
@@ -51,7 +55,17 @@ final class AppModel: ObservableObject {
     func popToRoot() { path.removeAll() }
 
     func openArchive(_ handle: String) {
+        DebugLog.shared.add(.nav, "Open archive of @\(handle)")
         path.append(Route(query: handle, handle: handle, kind: .archive))
+    }
+
+    /// Pushes a list of posts in the old Instagram style, starting at `index`.
+    func openPosts(_ source: FeedSource, index: Int) {
+        let feed = FeedModel(source: source, start: index)
+        let route = Route(query: "", handle: feed.handle, kind: .posts)
+        FeedRegistry.shared.register(feed, for: route.id)
+        DebugLog.shared.add(.nav, "Open \(feed.title.lowercased()) of @\(feed.handle) at post \(index + 1)")
+        path.append(route)
     }
 
     /// ninjaview://open?q=<username or link>, ninjaview://@handle, ninjaview://user/<handle>

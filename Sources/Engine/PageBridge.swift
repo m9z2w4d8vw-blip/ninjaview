@@ -59,6 +59,7 @@ final class PageBridge: NSObject {
     weak var delegate: PageBridgeDelegate?
     private(set) var isReady = false
     private(set) var isTornDown = false
+    private var navigationStart: Date?
 
     init(_ prepared: PreparedWebView) {
         webView = prepared.webView
@@ -78,8 +79,36 @@ final class PageBridge: NSObject {
         return true
     }
 
-    /// Runs an async function body in the page. Engine calls always return a JSON string.
+    /// Runs an async function body in the page and logs what it did and how long it took.
+    /// Engine calls always return a JSON string.
     func call(_ body: String, _ arguments: [String: Any] = [:], timeout: TimeInterval = 45) async throws -> String {
+        let name = Self.callName(body)
+        let started = Date()
+        do {
+            let json = try await rawCall(body, arguments, timeout: timeout)
+            DebugLog.shared.add(.web, "\(name)(\(Self.describe(arguments))) took \(Self.ms(since: started)) ms, \(json.utf8.count) bytes back")
+            return json
+        } catch {
+            DebugLog.shared.error(.web, "\(name)(\(Self.describe(arguments))) failed after \(Self.ms(since: started)) ms: \(error.localizedDescription)")
+            throw error
+        }
+    }
+
+    nonisolated static func callName(_ body: String) -> String {
+        guard let range = body.range(of: #"__nv\.[A-Za-z]+"#, options: .regularExpression) else { return "script" }
+        return String(body[range].dropFirst(5))
+    }
+
+    nonisolated static func describe(_ arguments: [String: Any]) -> String {
+        arguments.keys.sorted().map { key in
+            let value = String(describing: arguments[key] ?? "")
+            return "\(key)=\(value.count > 80 ? String(value.prefix(80)) + "\u{2026}" : value)"
+        }.joined(separator: ", ")
+    }
+
+    nonisolated static func ms(since start: Date) -> Int { Int(Date().timeIntervalSince(start) * 1000) }
+
+    private func rawCall(_ body: String, _ arguments: [String: Any], timeout: TimeInterval) async throws -> String {
         guard !isTornDown else { throw EngineError.torn }
         let webView = self.webView
         return try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<String, Error>) in
@@ -94,7 +123,7 @@ final class PageBridge: NSObject {
                     }
                 case .failure(let error):
                     if let message = (error as NSError).userInfo["WKJavaScriptExceptionMessage"] as? String {
-                        DebugLog.shared.add(.js, "Exception: \(message)")
+                        DebugLog.shared.error(.js, "Exception: \(message)")
                     }
                     once.resume(throwing: error)
                 }
@@ -110,7 +139,7 @@ final class PageBridge: NSObject {
         do {
             return try JSONDecoder().decode(type, from: Data(json.utf8))
         } catch {
-            DebugLog.shared.add(.web, "Unexpected reply for \(T.self): \(error.localizedDescription) \(json.prefix(240))")
+            DebugLog.shared.error(.web, "Unexpected reply for \(T.self): \(error.localizedDescription) \(json.prefix(240))")
             throw EngineError.badReply
         }
     }
@@ -149,12 +178,25 @@ extension PageBridge: ScriptMessageTarget {
             isReady = true
             DebugLog.shared.add(.web, "Page ready")
         case "log":
-            DebugLog.shared.add(.js, body["message"] as? String ?? "")
+            let level: DebugLog.Level
+            switch body["level"] as? String {
+            case "error"?: level = .error
+            case "info"?, "log"?: level = .info
+            default: level = .warning // the engine's own reports are script errors
+            }
+            DebugLog.shared.add(.js, body["message"] as? String ?? "", level: level)
         case "net":
             let method = body["method"] as? String ?? "GET"
             let url = body["url"] as? String ?? ""
             let status = (body["status"] as? NSNumber)?.intValue ?? 0
-            DebugLog.shared.add(.net, "\(method) \(status) \(url)")
+            let ms = (body["ms"] as? NSNumber)?.intValue
+            let size = (body["size"] as? NSNumber)?.int64Value ?? 0
+            var line = "\(method) \(status)"
+            if let ms { line += " \(ms) ms" }
+            if size > 0 { line += " " + ByteCountFormatter.string(fromByteCount: size, countStyle: .file) }
+            line += " " + url
+            if let failure = body["error"] as? String { line += " (\(failure))" }
+            DebugLog.shared.add(.net, line, level: status == 0 || status >= 400 ? .warning : .info)
         default:
             break
         }
@@ -227,8 +269,14 @@ extension PageBridge: WKNavigationDelegate {
         DownloadCenter.shared.adopt(download)
     }
 
+    func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
+        navigationStart = Date()
+        DebugLog.shared.add(.web, "Loading \(webView.url?.absoluteString ?? "page")")
+    }
+
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
-        DebugLog.shared.add(.web, "Loaded \(webView.url?.absoluteString ?? "page")")
+        let elapsed = navigationStart.map { " in \(Self.ms(since: $0)) ms" } ?? ""
+        DebugLog.shared.add(.web, "Loaded \(webView.url?.absoluteString ?? "page")\(elapsed)")
     }
 
     func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
@@ -241,6 +289,7 @@ extension PageBridge: WKNavigationDelegate {
 
     func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
         isReady = false
+        DebugLog.shared.warn(.web, "The page's web process ended (usually memory pressure); reloading it")
         delegate?.bridgeLostContent()
     }
 
@@ -249,7 +298,7 @@ extension PageBridge: WKNavigationDelegate {
         // -999: replaced by another navigation. 102: became a download. 204: handled by a plug-in.
         if ns.domain == NSURLErrorDomain && ns.code == NSURLErrorCancelled { return }
         if ns.domain == "WebKitErrorDomain" && (ns.code == 102 || ns.code == 204) { return }
-        DebugLog.shared.add(.web, "Load failed: \(ns.domain) \(ns.code) \(ns.localizedDescription)")
+        DebugLog.shared.error(.web, "Load failed: \(ns.domain) \(ns.code) \(ns.localizedDescription)")
         delegate?.bridgeFailedToLoad(error)
     }
 }

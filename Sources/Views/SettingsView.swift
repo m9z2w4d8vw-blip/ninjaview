@@ -76,8 +76,20 @@ struct SettingsView: View {
                     Text("Only matters when you open tik.ninja's page itself from a profile's menu. It hides the site's header, search box and footer.")
                 }
 
-                Section("Diagnostics") {
+                Section {
                     NavigationLink("Debug log") { DebugLogView() }
+                    Button("Export debug log (.txt)") {
+                        if let url = Diagnostics.exportReport() {
+                            ShareSheet.present(url)
+                        } else {
+                            downloads.show(.failure, "Couldn't create the log file.")
+                        }
+                    }
+                    Button("Clear debug log", role: .destructive) { DebugLog.shared.clear() }
+                } header: {
+                    Text("Diagnostics")
+                } footer: {
+                    Text("The .txt report covers this launch and the four before it: page loads and engine calls with their timing, every request tik.ninja's page makes, script errors and console warnings, downloads, playback and storage, plus a snapshot of the app and phone. It stays on this iPhone unless you share it.")
                 }
 
                 Section {

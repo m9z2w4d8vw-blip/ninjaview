@@ -19,11 +19,22 @@ struct NinjaViewApp: App {
         } catch {
             print("Audio session: \(error)")
         }
-        DebugLog.shared.add(.app, "Launched NinjaView \(Bundle.main.versionString) on iOS \(UIDevice.current.systemVersion)")
+        DebugLog.shared.add(.app, "Launched NinjaView \(Bundle.main.versionString) on \(Diagnostics.modelIdentifier), iOS \(UIDevice.current.systemVersion)")
         _ = ProfileStore.session // creating it erases the previous session's downloads
         _ = ProfileStore.archive
         NotificationCenter.default.addObserver(forName: UIApplication.willTerminateNotification, object: nil, queue: .main) { _ in
             MainActor.assumeIsolated { ProfileStore.session.wipe() }
+        }
+        NotificationCenter.default.addObserver(forName: UIApplication.didReceiveMemoryWarningNotification, object: nil, queue: .main) { _ in
+            MainActor.assumeIsolated {
+                let inUse = Diagnostics.memoryFootprint.map { String(format: "%.0f MB", $0) } ?? "unknown"
+                DebugLog.shared.warn(.app, "Memory warning (in use: \(inUse))")
+            }
+        }
+        NotificationCenter.default.addObserver(forName: ProcessInfo.thermalStateDidChangeNotification, object: nil, queue: .main) { _ in
+            MainActor.assumeIsolated {
+                DebugLog.shared.add(.app, "Thermal state is now \(Diagnostics.thermal(ProcessInfo.processInfo.thermalState))")
+            }
         }
         WebFactory.shared.warmUp()
     }

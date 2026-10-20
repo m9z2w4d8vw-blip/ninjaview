@@ -176,7 +176,7 @@ final class CrawlCenter: ObservableObject {
         crawl.postsTotal = 0
         crawl.activity = "Looking up @\(crawl.handle)"
         store.begin(crawl.handle)
-        DebugLog.shared.add(.download, "Started \(crawl.mode.rawValue) download of @\(crawl.handle)")
+        DebugLog.shared.add(.crawl, "Started \(crawl.mode.rawValue) download of @\(crawl.handle)")
 
         let engine = ProfileEngine(route: Route(query: crawl.handle, handle: crawl.handle), headless: true)
         defer { engine.teardown() }
@@ -197,7 +197,7 @@ final class CrawlCenter: ObservableObject {
                 profile.status = .failed
                 profile.note = reason
             }
-            DebugLog.shared.add(.download, "Download of @\(crawl.handle) failed: \(reason)")
+            DebugLog.shared.error(.crawl, "Download of @\(crawl.handle) failed: \(reason)")
             return
         }
 
@@ -252,7 +252,7 @@ final class CrawlCenter: ObservableObject {
         store.finish(crawl.handle)
         crawl.activity = ""
         crawl.state = .finished
-        DebugLog.shared.add(.download, "Finished \(crawl.mode.rawValue) download of @\(crawl.handle): \(crawl.postsDone) posts")
+        DebugLog.shared.add(.crawl, "Finished \(crawl.mode.rawValue) download of @\(crawl.handle): \(crawl.postsDone) posts")
     }
 
     private func stop(_ crawl: Crawl, _ store: ProfileStore) {
@@ -301,6 +301,7 @@ final class CrawlCenter: ObservableObject {
     private func savePost(_ item: PostItem, key: String, tab: ProfileTab, crawl: Crawl, engine: ProfileEngine) async {
         let store = crawl.store
         let folder = store.postFolder(crawl.handle, tab, key)
+        let started = Date()
         // An archive reuses whatever this session already downloaded.
         if crawl.mode == .archive, let cached = ProfileStore.session.loadPost(crawl.handle, tab, key), cached.detail != nil,
            Self.copyFiles(of: cached, from: ProfileStore.session.postFolder(crawl.handle, tab, key), to: folder) {
@@ -331,8 +332,11 @@ final class CrawlCenter: ObservableObject {
             let videoOK = !detail.isVideo || post.videoFile != nil
             let photosOK = post.photoFiles.count == detail.photoURLs.count
             store.savePost(post, handle: crawl.handle, complete: videoOK && photosOK)
+            let media = "\(post.videoFile != nil ? "video" : "no video"), \(post.photoFiles.count) photos, \(post.comments.count) comments"
+            DebugLog.shared.add(.crawl, "Saved \(tab.rawValue) \(item.index + 1) of @\(crawl.handle) in \(Int(Date().timeIntervalSince(started) * 1000)) ms: \(media)\(videoOK && photosOK ? "" : ", some media missing")",
+                                level: videoOK && photosOK ? .info : .warning)
         } catch {
-            DebugLog.shared.add(.download, "Skipped \(tab.rawValue) \(item.index + 1) of @\(crawl.handle): \(error.localizedDescription)")
+            DebugLog.shared.warn(.crawl, "Skipped \(tab.rawValue) \(item.index + 1) of @\(crawl.handle): \(error.localizedDescription)")
         }
     }
 
@@ -420,7 +424,7 @@ final class MediaFetcher {
             try FileManager.default.moveItem(at: temp, to: destination)
             return fileName
         } catch {
-            DebugLog.shared.add(.download, "Couldn't save \(name) from \(url.host ?? "a file"): \(error.localizedDescription)")
+            DebugLog.shared.warn(.crawl, "Couldn't save \(name) from \(url.host ?? "a file"): \(error.localizedDescription)")
             return nil
         }
     }

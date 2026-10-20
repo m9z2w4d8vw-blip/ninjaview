@@ -158,6 +158,7 @@ final class ProfileStore: ObservableObject {
 
     func finish(_ handle: String) {
         let size = Self.size(of: folder(handle))
+        DebugLog.shared.add(.store, "Finished \(kind == .archive ? "archive" : "session copy") of @\(handle): \(ByteCountFormatter.string(fromByteCount: size, countStyle: .file))")
         update(handle, now: true) { profile in
             profile.status = .complete
             profile.note = ""
@@ -167,6 +168,7 @@ final class ProfileStore: ObservableObject {
 
     func delete(_ handle: String) {
         let key = handle.lowercased()
+        DebugLog.shared.add(.store, "Deleted the \(kind == .archive ? "archive" : "session copy") of @\(handle)")
         saveTasks[key]?.cancel()
         saveTasks[key] = nil
         profiles[key] = nil

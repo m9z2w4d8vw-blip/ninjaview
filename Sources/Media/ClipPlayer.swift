@@ -1,9 +1,8 @@
 import AVFoundation
-import AVKit
 import SwiftUI
 import UIKit
 
-/// One AVPlayer shared by the post viewer; whichever page is current plays through it.
+/// One AVPlayer per list of posts; the post in the middle of the screen plays through it.
 @MainActor
 final class ClipPlayer: ObservableObject {
     let player = AVPlayer()
@@ -11,26 +10,38 @@ final class ClipPlayer: ObservableObject {
     @Published private(set) var isPlaying = false
     @Published private(set) var isReady = false
     @Published private(set) var progress: Double = 0
+    @Published private(set) var duration: Double = 0
     @Published private(set) var failure: String? = nil
-    @Published var isMuted = false {
+    @Published var isMuted = true {
         didSet { player.isMuted = isMuted }
     }
 
     private var url: URL?
+    private var loadStarted = Date()
     private var statusObservation: NSKeyValueObservation?
     private var endObserver: NSObjectProtocol?
+    private var stallObserver: NSObjectProtocol?
     private var timeObserver: Any?
 
     init() {
         player.actionAtItemEnd = .none
-        timeObserver = player.addPeriodicTimeObserver(forInterval: CMTime(seconds: 0.2, preferredTimescale: 600), queue: .main) { [weak self] time in
+        player.isMuted = true
+        timeObserver = player.addPeriodicTimeObserver(forInterval: CMTime(seconds: 0.25, preferredTimescale: 600), queue: .main) { [weak self] time in
             MainActor.assumeIsolated {
                 guard let self, let item = self.player.currentItem else { return }
                 let duration = item.duration.seconds
                 guard duration.isFinite, duration > 0 else { return }
+                if self.duration != duration { self.duration = duration }
                 self.progress = min(1, max(0, time.seconds / duration))
             }
         }
+    }
+
+    /// Time left, Instagram style ("0:59").
+    var remainingText: String? {
+        guard duration > 0 else { return nil }
+        let left = max(0, Int((duration * (1 - progress)).rounded()))
+        return String(format: "%d:%02d", left / 60, left % 60)
     }
 
     func load(_ url: URL) {
@@ -39,6 +50,9 @@ final class ClipPlayer: ObservableObject {
         failure = nil
         isReady = false
         progress = 0
+        duration = 0
+        loadStarted = Date()
+        DebugLog.shared.add(.player, "Loading \(url.isFileURL ? "saved file \(url.lastPathComponent)" : "video from \(url.host ?? "?")")")
         // Same user agent as the page, so the CDN sees an ordinary browser.
         let asset = AVURLAsset(url: url, options: ["AVURLAssetHTTPHeaderFieldsKey": ["User-Agent": WebFactory.userAgent]])
         let item = AVPlayerItem(asset: asset)
@@ -50,9 +64,10 @@ final class ClipPlayer: ObservableObject {
                 switch status {
                 case .readyToPlay:
                     self.isReady = true
+                    DebugLog.shared.add(.player, "Ready to play after \(Int(Date().timeIntervalSince(self.loadStarted) * 1000)) ms")
                 case .failed:
                     self.failure = message ?? "This video couldn't be played."
-                    DebugLog.shared.add(.download, "Playback failed: \(message ?? "unknown error")")
+                    DebugLog.shared.error(.player, "Playback failed: \(message ?? "unknown error")")
                 default:
                     break
                 }
@@ -66,6 +81,10 @@ final class ClipPlayer: ObservableObject {
                 self.player.play()
             }
         }
+        if let stallObserver { NotificationCenter.default.removeObserver(stallObserver) }
+        stallObserver = NotificationCenter.default.addObserver(forName: .AVPlayerItemPlaybackStalled, object: item, queue: .main) { _ in
+            Task { @MainActor in DebugLog.shared.warn(.player, "Playback stalled, waiting on the network") }
+        }
         player.replaceCurrentItem(with: item)
     }
 
@@ -77,10 +96,6 @@ final class ClipPlayer: ObservableObject {
     func pause() {
         player.pause()
         isPlaying = false
-    }
-
-    func toggle() {
-        if isPlaying { pause() } else { play() }
     }
 
     func seek(to fraction: Double) {
@@ -97,6 +112,10 @@ final class ClipPlayer: ObservableObject {
         if let endObserver {
             NotificationCenter.default.removeObserver(endObserver)
             self.endObserver = nil
+        }
+        if let stallObserver {
+            NotificationCenter.default.removeObserver(stallObserver)
+            self.stallObserver = nil
         }
     }
 }
@@ -120,45 +139,5 @@ struct PlayerSurface: UIViewRepresentable {
 
     func updateUIView(_ view: PlayerLayerView, context: Context) {
         if view.playerLayer.player !== player { view.playerLayer.player = player }
-    }
-}
-
-/// The system player: scrubbing, Picture in Picture and AirPlay.
-@MainActor
-struct SystemPlayer: UIViewControllerRepresentable {
-    let player: AVPlayer
-
-    func makeUIViewController(context: Context) -> AVPlayerViewController {
-        let controller = AVPlayerViewController()
-        controller.player = player
-        controller.allowsPictureInPicturePlayback = true
-        controller.canStartPictureInPictureAutomaticallyFromInline = true
-        return controller
-    }
-
-    func updateUIViewController(_ controller: AVPlayerViewController, context: Context) {
-        if controller.player !== player { controller.player = player }
-    }
-}
-
-struct SystemPlayerScreen: View {
-    let player: AVPlayer
-    @Environment(\.dismiss) private var dismiss
-
-    var body: some View {
-        SystemPlayer(player: player)
-            .ignoresSafeArea()
-            .overlay(alignment: .topLeading) {
-                Button { dismiss() } label: {
-                    Image(systemName: "xmark")
-                        .font(.system(size: 16, weight: .semibold))
-                        .foregroundStyle(.white)
-                        .frame(width: 40, height: 40)
-                        .background(.black.opacity(0.45), in: Circle())
-                }
-                .padding(.leading, 16)
-                .padding(.top, 8)
-                .accessibilityLabel("Close player")
-            }
     }
 }

@@ -14,6 +14,12 @@ struct RootView: View {
                         ProfileScreen(route: route)
                     case .archive:
                         ArchiveProfileView(handle: route.handle ?? route.query)
+                    case .posts:
+                        if let feed = FeedRegistry.shared.feed(for: route.id) {
+                            PostFeedScreen(feed: feed)
+                        } else {
+                            ContentUnavailableView("This list was closed", systemImage: "square.stack")
+                        }
                     }
                 }
         }
@@ -23,6 +29,7 @@ struct RootView: View {
             Chrome.apply(settings.appearance)
         }
         .onChange(of: scenePhase) { _, phase in
+            DebugLog.shared.add(.app, "App is \(String(describing: phase))")
             CrawlCenter.shared.scenePhaseChanged(phase)
         }
     }

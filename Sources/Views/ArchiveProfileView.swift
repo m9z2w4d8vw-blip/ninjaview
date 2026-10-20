@@ -10,7 +10,6 @@ struct ArchiveProfileView: View {
     @EnvironmentObject private var app: AppModel
     @EnvironmentObject private var downloads: DownloadCenter
     @State private var tab: ProfileTab = .videos
-    @State private var viewer: ViewerRequest? = nil
     @State private var panel: ProfilePanel? = nil
     @State private var confirmingDelete = false
 
@@ -26,9 +25,6 @@ struct ArchiveProfileView: View {
         .background(Color.nvPaper.ignoresSafeArea())
         .navigationTitle(handle)
         .navigationBarTitleDisplayMode(.inline)
-        .fullScreenCover(item: $viewer) { request in
-            ItemViewer(request: request)
-        }
         .sheet(item: $panel) { which in
             switch which {
             case .followers:
@@ -175,7 +171,7 @@ struct ArchiveProfileView: View {
         let entries = profile.entries(tab)
         guard entries.indices.contains(index) else { return }
         let feed = StoredFeed(handle: handle, store: store, tab: tab, entries: entries)
-        viewer = ViewerRequest(source: .stored(feed), index: index)
+        app.openPosts(.stored(feed), index: index)
     }
 
     private func openLive(_ other: String) {

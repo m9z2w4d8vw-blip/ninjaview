@@ -12,7 +12,6 @@ struct ProfileScreen: View {
     @ObservedObject private var archives = ProfileStore.archive
     @EnvironmentObject private var app: AppModel
     @EnvironmentObject private var downloads: DownloadCenter
-    @State private var viewer: ViewerRequest? = nil
     @State private var panel: ProfilePanel? = nil
 
     private let gridTabs: [ProfileTab] = [.videos, .reposts, .stories]
@@ -36,10 +35,7 @@ struct ProfileScreen: View {
             .onAppear { engine.start() }
             .task(id: engine.header?.key) { await profileDidLoad() }
             .onChange(of: engine.linkedPost) { _, post in
-                if let post { viewer = ViewerRequest(source: .linked(engine, post), index: 0) }
-            }
-            .fullScreenCover(item: $viewer) { request in
-                ItemViewer(request: request)
+                if let post { app.openPosts(.linked(engine, post), index: 0) }
             }
             .sheet(item: $panel) { which in
                 switch which {
@@ -106,7 +102,7 @@ struct ProfileScreen: View {
         return ScrollView {
             LazyVStack(alignment: .leading, spacing: 0, pinnedViews: [.sectionHeaders]) {
                 InstaHeader(header: header, avatarURL: header.avatarURL, hasStories: !stories.isEmpty,
-                            onAvatarTap: { viewer = ViewerRequest(source: .live(engine, .stories), index: 0) },
+                            onAvatarTap: { app.openPosts(.live(engine, .stories), index: 0) },
                             onStatTap: { tapped in panel = tapped == .followers ? ProfilePanel.followers : ProfilePanel.following })
                     .padding(.horizontal, 16)
                     .padding(.top, 8)
@@ -117,13 +113,13 @@ struct ProfileScreen: View {
                     .padding(.horizontal, 16)
                 if !highlights.isEmpty {
                     HighlightsRow(items: highlights) { index in
-                        viewer = ViewerRequest(source: .live(engine, .highlights), index: index)
+                        app.openPosts(.live(engine, .highlights), index: index)
                     }
                     .padding(.top, 16)
                 }
                 Section {
                     LiveTabBody(engine: engine, tab: gridTab) { index in
-                        viewer = ViewerRequest(source: .live(engine, gridTab), index: index)
+                        app.openPosts(.live(engine, gridTab), index: index)
                     }
                 } header: {
                     InstaTabBar(tabs: gridTabs, selected: gridTab) { engine.select($0) }
@@ -144,7 +140,7 @@ struct ProfileScreen: View {
                 .font(.subheadline.weight(.semibold))
                 .foregroundStyle(Color.nvInk)
             if let post = engine.linkedPost {
-                Button("View post") { viewer = ViewerRequest(source: .linked(engine, post), index: 0) }
+                Button("View post") { app.openPosts(.linked(engine, post), index: 0) }
                     .buttonStyle(InkButtonStyle())
             }
         }

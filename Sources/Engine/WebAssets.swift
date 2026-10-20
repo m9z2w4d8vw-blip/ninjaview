@@ -113,19 +113,24 @@ html.nv-noads iframe[src*="googleads"] { display: none !important; }
   if (window.__nvNet) return;
   window.__nvNet = true;
   function post(msg) { try { window.webkit.messageHandlers.nv.postMessage(msg); } catch (e) {} }
-  // Method, status and a shortened URL for each request, for Settings > Debug log.
   function shorten(u) {
     try { var x = new URL(u, location.href); return x.host + x.pathname + (x.search ? x.search.slice(0, 160) : ''); }
     catch (e) { return String(u || '').slice(0, 200); }
   }
+  // Each request tik.ninja's page makes: method, status, time taken, size and a shortened URL.
   if (typeof window.fetch === 'function') {
     var nativeFetch = window.fetch;
     window.fetch = function (input, init) {
       var url = typeof input === 'string' ? input : (input && (input.url || input.href)) || '';
       var method = (init && init.method) || (input && input.method) || 'GET';
+      var t0 = Date.now();
       var request = nativeFetch.apply(window, arguments);
-      request.then(function (r) { post({ type: 'net', method: method, url: shorten(url), status: r.status }); },
-                   function (err) { post({ type: 'net', method: method, url: shorten(url), status: 0, error: String(err) }); });
+      request.then(function (r) {
+        var size = Number(r.headers && r.headers.get('content-length')) || 0;
+        post({ type: 'net', method: method, url: shorten(url), status: r.status, ms: Date.now() - t0, size: size });
+      }, function (err) {
+        post({ type: 'net', method: method, url: shorten(url), status: 0, ms: Date.now() - t0, size: 0, error: String(err) });
+      });
       return request;
     };
   }
@@ -133,14 +138,33 @@ html.nv-noads iframe[src*="googleads"] { display: none !important; }
     var proto = XMLHttpRequest.prototype, open = proto.open, send = proto.send;
     proto.open = function (method, url) { this.__nvInfo = { method: method, url: url }; return open.apply(this, arguments); };
     proto.send = function () {
-      var xhr = this;
+      var xhr = this, t0 = Date.now();
       xhr.addEventListener('loadend', function () {
-        var i = xhr.__nvInfo || {};
-        post({ type: 'net', method: i.method || 'GET', url: shorten(i.url), status: xhr.status });
+        var i = xhr.__nvInfo || {}, size = 0;
+        try {
+          size = Number(xhr.getResponseHeader('content-length')) || (typeof xhr.responseText === 'string' ? xhr.responseText.length : 0);
+        } catch (e) { size = 0; }
+        post({ type: 'net', method: i.method || 'GET', url: shorten(i.url), status: xhr.status, ms: Date.now() - t0, size: size });
       });
       return send.apply(this, arguments);
     };
   }
+  // Console warnings and errors from tik.ninja's own scripts.
+  ['warn', 'error'].forEach(function (level) {
+    var original = console[level];
+    if (typeof original !== 'function') return;
+    console[level] = function () {
+      try {
+        var parts = Array.prototype.map.call(arguments, function (a) {
+          if (a instanceof Error) return a.message;
+          if (a && typeof a === 'object') { try { return JSON.stringify(a).slice(0, 300); } catch (e) { return String(a); } }
+          return String(a);
+        });
+        post({ type: 'log', level: level, message: 'console.' + level + ': ' + parts.join(' ').slice(0, 600) });
+      } catch (e) {}
+      return original.apply(console, arguments);
+    };
+  });
 })();
 // Runs at document start, before tik.ninja's own scripts.
 (function () {

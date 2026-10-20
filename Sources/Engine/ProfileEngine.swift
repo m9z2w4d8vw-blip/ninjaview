@@ -26,6 +26,8 @@ final class EngineRegistry {
     /// Closed engines, kept briefly so a screen still animating away never starts a new page.
     private var retired: [UUID: ProfileEngine] = [:]
 
+    var count: Int { engines.count }
+
     func engine(for route: Route) -> ProfileEngine {
         if let existing = engines[route.id] ?? retired[route.id] { return existing }
         let engine = ProfileEngine(route: route)

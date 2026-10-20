@@ -26,8 +26,8 @@ If the build fails, open the failed run. The **Summarize compiler errors** step 
 - Search for a username, or paste a TikTok profile, post or `vm.tiktok.com` link. The Paste button skips iOS's paste prompt.
 - Profiles are laid out like Instagram's. The avatar has a ring when the account has stories; tap it to watch them. Highlights sit in a row of circles. Tap the Followers or Following count to open the list.
 - The icon tabs switch between posts, reposts and stories. Grids load more as you scroll, and pulling down refreshes.
-- Tap a post to open the viewer. Swipe up and down between posts and sideways through photo posts. Tap a video to pause it, and drag along the bottom bar to scrub.
-- The viewer's buttons: **Comments** (with reply threads), **Save** (video or photos to Photos), **Audio** (through tik.ninja's own download, opens the share sheet), **Sound**, and **Player** (the system player, with Picture in Picture and AirPlay).
+- Tap a post to open it in a list of posts, the way Instagram used to show them: the post you tapped, then the rest below it. Media stays inside the post at full width; nothing opens full screen. The video nearest the middle of the screen plays, muted until you tap it; the button in its corner pauses it. Swipe sideways through photo posts.
+- Under each post: comments (with reply threads), share, audio (through tik.ninja's own download) and save to Photos. The ... menu has the same, plus copying the caption. Tapping an @mention in a caption opens that profile.
 - Tapping a follower, a followed account or a commenter opens their profile.
 
 ### Offline copy for the session
@@ -52,7 +52,7 @@ If tik.ninja shows a verification check, the profile screen says so, and **Show 
 
 ## When tik.ninja changes
 
-The selectors live in `Sources/Engine/WebAssets.swift` (`engineJS`) and match tik.ninja's markup as of October 2026. **Settings > Debug log** records page loads, script errors, each request tik.ninja's page makes (filter by `net`), downloads and playback failures. Share it to diagnose a break.
+The selectors live in `Sources/Engine/WebAssets.swift` (`engineJS`) and match tik.ninja's markup as of October 2026. **Settings > Diagnostics > Export debug log (.txt)** writes a report you can save to Files or send: a snapshot of the app and phone, then the log of this launch and the four before it. The log covers page loads and every engine call with its timing, each request tik.ninja's page makes (status, time, size), script errors and console warnings, downloads, playback, storage and app lifecycle. **Debug log** shows the same in the app, filterable by area and by warnings and errors.
 
 ## Project layout
 
