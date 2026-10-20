@@ -1,11 +1,14 @@
 import SwiftUI
 
+@MainActor
 struct SettingsView: View {
     @EnvironmentObject private var settings: AppSettings
     @EnvironmentObject private var app: AppModel
     @EnvironmentObject private var downloads: DownloadCenter
     @Environment(\.dismiss) private var dismiss
     @State private var confirmingClear = false
+    @State private var confirmingDeleteArchives = false
+    @ObservedObject private var archives = ProfileStore.archive
 
     var body: some View {
         NavigationStack {
@@ -40,6 +43,29 @@ struct SettingsView: View {
                     }
                 } footer: {
                     Text("Site data is kept in memory only and is erased whenever NinjaView quits. History and saved profiles stay on this iPhone.")
+                }
+
+                Section {
+                    Toggle("Download profiles you open", isOn: $settings.prefetch)
+                    Toggle("Include comments", isOn: $settings.saveComments)
+                    Toggle("Include followers and following", isOn: $settings.saveLists)
+                } header: {
+                    Text("Offline")
+                } footer: {
+                    Text("Opening a profile saves its posts, videos, photos and comments in the background so they open instantly. That copy is erased when NinjaView closes; Archive on a profile keeps one. This can use a lot of cellular data.")
+                }
+
+                Section {
+                    LabeledContent("Archives", value: ByteCountFormatter.string(fromByteCount: archives.totalBytes, countStyle: .file))
+                    Button("Delete all archives", role: .destructive) { confirmingDeleteArchives = true }
+                        .disabled(archives.profiles.isEmpty)
+                        .confirmationDialog("Delete every archive?", isPresented: $confirmingDeleteArchives, titleVisibility: .visible) {
+                            Button("Delete all archives", role: .destructive) { CrawlCenter.shared.deleteAllArchives() }
+                        } message: {
+                            Text("Every archived profile, with its videos, photos and comments, will be removed from this iPhone.")
+                        }
+                } footer: {
+                    Text("Archives are also in the Files app, under On My iPhone > NinjaView > Archives.")
                 }
 
                 Section {

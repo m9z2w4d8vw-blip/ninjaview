@@ -1,5 +1,6 @@
 import AVFoundation
 import SwiftUI
+import UIKit
 
 @main
 @MainActor
@@ -19,6 +20,11 @@ struct NinjaViewApp: App {
             print("Audio session: \(error)")
         }
         DebugLog.shared.add(.app, "Launched NinjaView \(Bundle.main.versionString) on iOS \(UIDevice.current.systemVersion)")
+        _ = ProfileStore.session // creating it erases the previous session's downloads
+        _ = ProfileStore.archive
+        NotificationCenter.default.addObserver(forName: UIApplication.willTerminateNotification, object: nil, queue: .main) { _ in
+            MainActor.assumeIsolated { ProfileStore.session.wipe() }
+        }
         WebFactory.shared.warmUp()
     }
 

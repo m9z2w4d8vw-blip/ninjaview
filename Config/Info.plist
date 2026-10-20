@@ -35,6 +35,10 @@
 	<false/>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
+	<key>LSSupportsOpeningDocumentsInPlace</key>
+	<true/>
+	<key>UIFileSharingEnabled</key>
+	<true/>
 	<key>NSPhotoLibraryAddUsageDescription</key>
 	<string>NinjaView saves the videos and photos you download to your library.</string>
 	<key>UIApplicationSceneManifest</key>

@@ -4,11 +4,18 @@ An iOS 17 app for viewing public TikTok profiles without an account, using [tik.
 
 ## Install
 
-1. Create an empty GitHub repo (for example `NinjaView`) and clone it with GitHub Desktop.
-2. Unzip `NinjaView-repo.zip` and copy everything inside it (`.github`, `.gitignore`, `Config`, `README.md`, `Resources`, `Sources`, `project.yml`) into the top of the clone. Don't copy an enclosing folder.
-3. Commit and push. In GitHub Desktop's list of changes, check that `.github/workflows/build.yml` is included. If it isn't, open the repo on github.com, choose **Add file > Create new file**, name it `.github/workflows/build.yml`, paste in the file's contents, and commit.
-4. The push starts **Actions > Build unsigned IPA**, which takes about five minutes. Each successful build on `main` is published under **Releases** as `NinjaView-b<number>.ipa`.
-5. On the iPhone, download the IPA from Releases, open it in TrollStore, and tap **Install**.
+Everything happens in the browser on github.com.
+
+1. Download `NinjaView-repo.zip` and extract it (right-click, **Extract All**). Don't upload the .zip itself; GitHub won't unpack it.
+2. On the repo page, choose **Add file > Upload files**.
+3. Open the extracted folder, select everything inside it with Ctrl+A (including `.github` and `.gitignore`), and drag it onto the upload page. Folders have to be dragged; the "choose your files" picker only takes single files.
+4. Leave it on **Commit directly to the main branch** and click **Commit changes**.
+
+Uploaded files replace the ones with the same name and folder. Files you don't upload are left alone, so if an update ever removes or renames a file, delete the old copy on GitHub (open the file, then **... > Delete file**).
+
+Every commit builds the app; watch it under **Actions** (about five minutes). Each build on `main` is published on the **Releases** page as `NinjaView.ipa`, a plain .ipa, not a zip. The newest one is always at `https://github.com/<you>/<repo>/releases/latest/download/NinjaView.ipa` (for a public repo). Builds on other branches attach the .ipa to their run on the Actions page instead.
+
+On the iPhone, download the .ipa from Releases, open it in TrollStore, and tap **Install**. The build number goes up with every run, so TrollStore treats each one as an update.
 
 If the build passes but the release step fails with a 403, go to **Settings > Actions > General > Workflow permissions**, choose **Read and write permissions**, and re-run the job.
 
@@ -17,24 +24,25 @@ If the build fails, open the failed run. The **Summarize compiler errors** step 
 ## Using it
 
 - Search for a username, or paste a TikTok profile, post or `vm.tiktok.com` link. The Paste button skips iOS's paste prompt.
-- On a profile, tap the Followers or Following count to jump to that tab. Grids load more as you scroll, and pulling down refreshes.
+- Profiles are laid out like Instagram's. The avatar has a ring when the account has stories; tap it to watch them. Highlights sit in a row of circles. Tap the Followers or Following count to open the list.
+- The icon tabs switch between posts, reposts and stories. Grids load more as you scroll, and pulling down refreshes.
 - Tap a post to open the viewer. Swipe up and down between posts and sideways through photo posts. Tap a video to pause it, and drag along the bottom bar to scrub.
 - The viewer's buttons: **Comments** (with reply threads), **Save** (video or photos to Photos), **Audio** (through tik.ninja's own download, opens the share sheet), **Sound**, and **Player** (the system player, with Picture in Picture and AirPlay).
-- Tapping a follower, a followed account or a commenter opens their profile. Back returns you to where you were.
-- The star saves a profile to the home screen, where recent profiles are listed too.
-- The profile menu can copy or share the TikTok link, reload, show tik.ninja's page itself, or start a new search.
+- Tapping a follower, a followed account or a commenter opens their profile.
 
-### Share sheet shortcut
+### Offline copy for the session
 
-NinjaView opens `ninjaview://open?q=<username or link>` and `ninjaview://@username`. To send links from TikTok or Safari's share sheet, make a Shortcut that receives URLs from the share sheet, URL-encodes the Shortcut Input, and opens `ninjaview://open?q=` followed by the encoded text.
+Opening a profile starts a background download of everything on it: posts, reposts, stories and highlights (video files, photos and covers), comments with their reply threads, follower and following lists, and analytics. A line under the profile's buttons shows progress. Posts that have finished play from the phone. The copy is erased when NinjaView closes. It runs on its own hidden page, one profile at a time, newest first. Turn it off, or leave out comments or lists, in **Settings > Offline**.
 
-## Privacy
+### Archives
 
-- No TikTok account or login is involved.
-- tik.ninja's cookies and site data stay in memory and are erased when the app quits. Settings can clear them sooner.
-- Saved profiles, history and cached avatars stay on the phone. History can be turned off.
-- Ads and trackers on tik.ninja's page are blocked by default.
-- tik.ninja's servers see the lookups you make. Videos and images load directly from TikTok's CDN, which sees your IP address, as it would for any site that shows TikTok media.
+**Archive** on a profile saves the account's own content to keep: posts, stories, highlights, covers, comments, follower and following lists, and analytics. Reposts are left out. Archives survive restarts and work without a connection, in the same layout under **Archived** on the home screen.
+
+- If the app closes mid-archive, the archive shows as paused. Tap **Resume** to continue where it stopped.
+- **Update archive** fetches new posts. Posts that were deleted from the account stay in the archive.
+- **Files** opens the archive in the Files app (On My iPhone > NinjaView > Archives). The menu can export it as a .zip, or delete it.
+
+Limits per profile: 300 posts per tab for a session copy, 5,000 for an archive, 400 comments and 60 reply threads per post, and 2,000 accounts per follower list.
 
 ## How it works
 
@@ -55,6 +63,7 @@ Config/Info.plist             build number comes from the Actions run number
 Resources/Assets.xcassets     app icon and accent color
 Sources/App                   app entry, theme, settings, navigation, saved profiles
 Sources/Engine                hidden pages: factory, dock, bridge, per-profile engine, injected JS and CSS
+Sources/Library               offline copies and archives: storage, background downloader
 Sources/Media                 saving to Photos, image loading, avatars, video player
 Sources/Model                 data types and input parsing
 Sources/Views                 SwiftUI screens

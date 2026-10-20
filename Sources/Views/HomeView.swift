@@ -1,11 +1,14 @@
 import SwiftUI
 
+@MainActor
 struct HomeView: View {
     @EnvironmentObject private var app: AppModel
     @State private var query = ""
     @State private var rejected = false
     @State private var showingSettings = false
     @FocusState private var fieldFocused: Bool
+    @ObservedObject private var archives = ProfileStore.archive
+    @State private var pendingDelete: StoredProfile? = nil
 
     var body: some View {
         List {
@@ -31,6 +34,29 @@ struct HomeView: View {
                 }
             }
 
+            if !archiveList.isEmpty {
+                Section {
+                    ForEach(archiveList) { profile in
+                        Button { app.openArchive(profile.handle) } label: {
+                            ArchiveRow(profile: profile, avatarURL: archives.avatarURL(profile.handle),
+                                       crawl: CrawlCenter.shared.find(profile.handle, .archive))
+                        }
+                        .buttonStyle(.plain)
+                        .listRowBackground(Color.nvPaper)
+                        .listRowSeparatorTint(Color.nvRule)
+                        .listRowInsets(EdgeInsets(top: 8, leading: 20, bottom: 8, trailing: 20))
+                        .swipeActions {
+                            Button { pendingDelete = profile } label: {
+                                Label("Delete", systemImage: "trash")
+                            }
+                            .tint(.red)
+                        }
+                    }
+                } header: {
+                    SectionLabel(title: "Archived")
+                }
+            }
+
             if !app.history.isEmpty {
                 Section {
                     ForEach(app.history) { item in
@@ -50,7 +76,7 @@ struct HomeView: View {
                 }
             }
 
-            if app.saved.isEmpty && app.history.isEmpty {
+            if app.saved.isEmpty && app.history.isEmpty && archives.profiles.isEmpty {
                 Section {
                     Text("Profiles you save with the star, and ones you've opened recently, show up here.")
                         .font(.footnote)
@@ -73,6 +99,19 @@ struct HomeView: View {
             }
         }
         .sheet(isPresented: $showingSettings) { SettingsView() }
+        .confirmationDialog("Delete this archive?", isPresented: deleteShown, titleVisibility: .visible, presenting: pendingDelete) { profile in
+            Button("Delete @\(profile.handle)", role: .destructive) { CrawlCenter.shared.deleteArchive(profile.handle) }
+        } message: { _ in
+            Text("Its saved videos, photos and comments will be removed from this iPhone.")
+        }
+    }
+
+    private var archiveList: [StoredProfile] {
+        archives.profiles.values.sorted { $0.updatedAt > $1.updatedAt }
+    }
+
+    private var deleteShown: Binding<Bool> {
+        Binding(get: { pendingDelete != nil }, set: { if !$0 { pendingDelete = nil } })
     }
 
     private var trimmed: String { query.trimmingCharacters(in: .whitespacesAndNewlines) }

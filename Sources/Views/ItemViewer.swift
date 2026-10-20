@@ -1,4 +1,5 @@
 import AVFoundation
+import Combine
 import SwiftUI
 import UIKit
 
@@ -7,13 +8,35 @@ struct CommentsRequest: Identifiable {
     let index: Int
 }
 
-/// State for the full-screen post viewer: which posts are loaded, which one
-/// tik.ninja's own viewer has open, and the shared video player.
+/// Posts read back from disk: an archive, or this session's downloads.
+struct StoredFeed {
+    let handle: String
+    let store: ProfileStore
+    let tab: ProfileTab
+    let entries: [StoredEntry]
+}
+
+enum FeedSource {
+    /// A tab on a live profile, driven through its tik.ninja page.
+    case live(ProfileEngine, ProfileTab)
+    /// The single post a pasted post link opened.
+    case linked(ProfileEngine, ItemDetail)
+    /// Saved posts, played from local files.
+    case stored(StoredFeed)
+}
+
+struct ViewerRequest: Identifiable {
+    let id = UUID()
+    let source: FeedSource
+    let index: Int
+}
+
+/// State for the full-screen post viewer: which posts are loaded, which one tik.ninja's
+/// own viewer has open, and the shared video player. Posts already downloaded (this
+/// session or in an archive) play from the phone.
 @MainActor
 final class FeedModel: ObservableObject {
-    let engine: ProfileEngine
-    let tab: ProfileTab?
-    let isSingle: Bool
+    let source: FeedSource
     let player = ClipPlayer()
 
     @Published private(set) var details: [Int: ItemDetail] = [:]
@@ -25,33 +48,70 @@ final class FeedModel: ObservableObject {
     private var pausedByUser = false
     /// Which post tik.ninja's own viewer shows right now; comments and audio need it.
     private var openInPage: Int? = nil
+    private var savedPosts: [Int: StoredPost] = [:]
+    private var engineWatch: AnyCancellable?
 
-    init(engine: ProfileEngine, request: ViewerRequest) {
-        self.engine = engine
-        tab = request.tab
-        isSingle = request.single != nil
-        current = request.single == nil ? request.index : 0
-        if let single = request.single {
-            details[0] = single
+    init(request: ViewerRequest) {
+        source = request.source
+        if case .linked = request.source { current = 0 } else { current = request.index }
+        if case .linked(_, let detail) = request.source {
+            details[0] = detail
             openInPage = 0
+        }
+        // Grids grow as the page loads more; pass the engine's changes along.
+        if let engine {
+            engineWatch = engine.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send() }
+        }
+    }
+
+    var engine: ProfileEngine? {
+        switch source {
+        case .live(let engine, _), .linked(let engine, _): return engine
+        case .stored: return nil
+        }
+    }
+
+    var tab: ProfileTab? {
+        switch source {
+        case .live(_, let tab): return tab
+        case .linked: return nil
+        case .stored(let feed): return feed.tab
+        }
+    }
+
+    var handle: String {
+        switch source {
+        case .live(let engine, _), .linked(let engine, _):
+            return engine.header?.handle ?? engine.route.handle ?? "tiktok"
+        case .stored(let feed):
+            return feed.handle
         }
     }
 
     var count: Int {
-        if isSingle { return 1 }
-        guard let tab else { return 0 }
-        return engine.tabs[tab]?.items.count ?? 0
+        switch source {
+        case .live(let engine, let tab): return engine.tabs[tab]?.items.count ?? 0
+        case .linked: return 1
+        case .stored(let feed): return feed.entries.count
+        }
     }
 
     func item(at index: Int) -> PostItem? {
-        guard let tab, let items = engine.tabs[tab]?.items, items.indices.contains(index) else { return nil }
-        return items[index]
+        switch source {
+        case .live(let engine, let tab):
+            guard let items = engine.tabs[tab]?.items, items.indices.contains(index) else { return nil }
+            return items[index]
+        case .linked:
+            return nil
+        case .stored(let feed):
+            guard feed.entries.indices.contains(index) else { return nil }
+            let entry = feed.entries[index]
+            guard let thumb = entry.thumbFile else { return entry.item }
+            return entry.item.withThumb(feed.store.postFolder(feed.handle, feed.tab, entry.key).appendingPathComponent(thumb).absoluteString)
+        }
     }
 
-    var baseName: String {
-        let handle = engine.header?.handle ?? engine.route.handle ?? "tiktok"
-        return "\(handle)_\(tab?.rawValue ?? "post")_\(current + 1)"
-    }
+    var baseName: String { "\(handle)_\(tab?.rawValue ?? "post")_\(current + 1)" }
 
     func focus(_ index: Int) {
         if index != current { pausedByUser = false }
@@ -59,7 +119,7 @@ final class FeedModel: ObservableObject {
         wanted = index
         syncPlayer()
         pump()
-        if let tab, !isSingle, index >= count - 3 {
+        if case .live(let engine, let tab) = source, index >= count - 3 {
             Task { await engine.loadMore(tab) }
         }
     }
@@ -83,27 +143,64 @@ final class FeedModel: ObservableObject {
 
     /// Loads the post the user is looking at; if they've moved on meanwhile, loads that one next.
     private func pump() {
-        guard loading == nil, let target = wanted, details[target] == nil, failures[target] == nil,
-              let tab, !isSingle else { return }
-        loading = target
-        Task {
-            do {
-                let detail = try await engine.openItem(tab, target)
+        guard loading == nil, let target = wanted, details[target] == nil, failures[target] == nil else { return }
+        switch source {
+        case .linked:
+            return
+        case .stored(let feed):
+            guard feed.entries.indices.contains(target) else { return }
+            let entry = feed.entries[target]
+            if let post = feed.store.loadPost(feed.handle, feed.tab, entry.key),
+               let detail = LocalLibrary.localDetail(post, store: feed.store, handle: feed.handle, live: false) {
+                savedPosts[target] = post
                 details[target] = detail
-                openInPage = target
-            } catch let error as EngineError where error.code == "missing" && (missingRetries[target] ?? 0) < 2 {
-                // Not on tik.ninja's page yet: ask it for more posts, then try again.
-                missingRetries[target, default: 0] += 1
-                await engine.loadMore(tab)
-                loading = nil
-                pump()
-                return
-            } catch {
-                failures[target] = error.localizedDescription
+            } else {
+                failures[target] = "This post wasn't saved completely. Update the archive to fetch it again."
             }
-            loading = nil
             syncPlayer()
-            pump()
+        case .live(let engine, let tab):
+            if let item = item(at: target), let saved = LocalLibrary.find(handle: handle, tab: tab, item: item),
+               let detail = LocalLibrary.localDetail(saved.post, store: saved.store, handle: handle, live: true) {
+                savedPosts[target] = saved.post
+                details[target] = detail
+                syncPlayer()
+                return
+            }
+            loading = target
+            Task {
+                do {
+                    let detail = try await engine.openItem(tab, target)
+                    details[target] = detail
+                    openInPage = target
+                } catch let error as EngineError where error.code == "missing" && (missingRetries[target] ?? 0) < 2 {
+                    // Not on tik.ninja's page yet: ask it for more posts, then try again.
+                    missingRetries[target, default: 0] += 1
+                    await engine.loadMore(tab)
+                    loading = nil
+                    pump()
+                    return
+                } catch {
+                    failures[target] = error.localizedDescription
+                }
+                loading = nil
+                syncPlayer()
+                pump()
+            }
+        }
+    }
+
+    /// The downloaded copy of a post, if there is one (its comments work offline).
+    func savedPost(at index: Int) -> StoredPost? {
+        if let hit = savedPosts[index] { return hit }
+        switch source {
+        case .stored(let feed):
+            guard feed.entries.indices.contains(index) else { return nil }
+            return feed.store.loadPost(feed.handle, feed.tab, feed.entries[index].key)
+        case .live(_, let tab):
+            guard let item = item(at: index) else { return nil }
+            return LocalLibrary.find(handle: handle, tab: tab, item: item)?.post
+        case .linked:
+            return nil
         }
     }
 
@@ -119,21 +216,20 @@ final class FeedModel: ObservableObject {
     /// Makes sure tik.ninja's viewer shows this post before asking it for comments or audio.
     func ensureOpen(_ index: Int) async throws {
         if openInPage == index { return }
-        guard let tab, !isSingle else { throw EngineError.page("closed") }
+        guard case .live(let engine, let tab) = source else { throw EngineError.page("closed") }
         _ = try await engine.openItem(tab, index)
         openInPage = index
     }
 
     func close() {
         player.stop()
-        Task { await engine.closeItem() }
+        if let engine { Task { await engine.closeItem() } }
     }
 }
 
 /// Full-screen, vertically paged posts, like TikTok's own player.
 @MainActor
 struct ItemViewer: View {
-    @ObservedObject private var engine: ProfileEngine
     @StateObject private var feed: FeedModel
     @Environment(\.dismiss) private var dismiss
     @State private var position: Int? = nil
@@ -142,10 +238,9 @@ struct ItemViewer: View {
     @State private var didAppear = false
     private let start: Int
 
-    init(engine: ProfileEngine, request: ViewerRequest) {
-        _engine = ObservedObject(wrappedValue: engine)
-        _feed = StateObject(wrappedValue: FeedModel(engine: engine, request: request))
-        start = request.single == nil ? request.index : 0
+    init(request: ViewerRequest) {
+        _feed = StateObject(wrappedValue: FeedModel(request: request))
+        if case .linked = request.source { start = 0 } else { start = request.index }
     }
 
     var body: some View {
@@ -185,7 +280,7 @@ struct ItemViewer: View {
             if let new, new != feed.current { feed.focus(new) }
         }
         .sheet(item: $comments) { request in
-            CommentsSheet(engine: engine, feed: feed, index: request.index) { handle in openProfile(handle) }
+            CommentsSheet(feed: feed, index: request.index) { handle in openProfile(handle) }
                 .presentationDetents([.medium, .large])
                 .presentationDragIndicator(.visible)
         }
@@ -346,7 +441,7 @@ struct FeedPage: View {
                 }
                 .accessibilityLabel("Save photos")
             }
-            if detail.hasAudio {
+            if detail.hasAudio && feed.engine != nil {
                 Button { requestAudio() } label: { RailButton(symbol: "music.note", label: "Audio") }
                     .accessibilityLabel("Save audio")
             }
@@ -369,12 +464,13 @@ struct FeedPage: View {
     }
 
     private func requestAudio() {
+        guard let engine = feed.engine else { return }
         let asking = "Asking tik.ninja for the audio…"
         Task {
             downloads.show(.working, asking)
             do {
                 try await feed.ensureOpen(index)
-                try await feed.engine.requestAudio()
+                try await engine.requestAudio()
                 try? await Task.sleep(nanoseconds: 8_000_000_000)
                 if downloads.toast?.text == asking {
                     downloads.show(.failure, "tik.ninja didn't send the audio. Try again in a moment.")

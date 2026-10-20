@@ -176,11 +176,11 @@ enum Store {
 }
 
 extension URL {
-    /// Accepts http(s) and data: URLs; anything else (blob:, empty) is nil.
+    /// Accepts http(s), data: and file: URLs (downloaded copies); anything else (blob:, empty) is nil.
     static func remote(_ string: String?) -> URL? {
         guard let s = string?.trimmingCharacters(in: .whitespacesAndNewlines), !s.isEmpty else { return nil }
         let lower = s.lowercased()
-        guard lower.hasPrefix("http://") || lower.hasPrefix("https://") || lower.hasPrefix("data:") else { return nil }
+        guard lower.hasPrefix("http://") || lower.hasPrefix("https://") || lower.hasPrefix("data:") || lower.hasPrefix("file:") else { return nil }
         return URL(string: s)
     }
 }

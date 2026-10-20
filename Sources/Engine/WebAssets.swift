@@ -419,6 +419,8 @@ html.nv-noads iframe[src*="googleads"] { display: none !important; }
   async function loadMore(name) {
     var p = panel(name);
     if (!p) return tabState(name);
+    // The page may be showing another tab (stories preload, a background download).
+    if (!shown(p)) { await openTab(name); p = panel(name); }
     var before = tabState(name);
     var count = before.items.length + before.users.length;
     var more = $('.load-more-btn', p);

@@ -41,6 +41,11 @@ final class ImagePipeline {
 
     func image(for url: URL, maxPixel: CGFloat) async -> UIImage? {
         if let hit = cached(url) { return hit }
+        if url.isFileURL {
+            guard let data = try? Data(contentsOf: url), let image = Self.downsample(data, maxPixel: maxPixel) else { return nil }
+            cache.setObject(image, forKey: url as NSURL)
+            return image
+        }
         var request = URLRequest(url: url)
         if url.scheme?.lowercased().hasPrefix("http") == true {
             request.setValue(WebFactory.userAgent, forHTTPHeaderField: "User-Agent")

@@ -1,15 +1,17 @@
 import SwiftUI
 import UIKit
 
-/// Colors follow tik.ninja's own palette so the app reads as the same product.
-/// Dark mode swaps paper and ink.
+/// Neutral greys in the manner of Instagram's iOS app: white or black backgrounds,
+/// grey button fills, hairline separators. Pink is kept for small accents.
 enum Palette {
-    static let paper = dynamic(light: 0xF5F4F0, dark: 0x000000)
-    static let card = dynamic(light: 0xFFFFFF, dark: 0x141414)
-    static let ink = dynamic(light: 0x0F0F0F, dark: 0xF5F4F0)
-    static let rule = dynamic(light: 0xD8D6D0, dark: 0x2A2A2A)
-    static let muted = dynamic(light: 0x6E6E6E, dark: 0x9A9A9A)
+    static let paper = dynamic(light: 0xFFFFFF, dark: 0x000000)
+    static let card = dynamic(light: 0xEFEFEF, dark: 0x262626)
+    static let ink = dynamic(light: 0x0A0A0A, dark: 0xF5F5F5)
+    static let rule = dynamic(light: 0xDBDBDB, dark: 0x363636)
+    static let muted = dynamic(light: 0x737373, dark: 0xA8A8A8)
     static let signal = dynamic(light: 0xFF2D55, dark: 0xFF375F)
+    /// Second stop of the story ring.
+    static let ember = dynamic(light: 0xFF8A00, dark: 0xFF9F0A)
 
     private static func dynamic(light: UInt32, dark: UInt32) -> UIColor {
         UIColor { traits in UIColor(hex: traits.userInterfaceStyle == .dark ? dark : light) }

@@ -7,6 +7,12 @@ struct Route: Hashable, Identifiable {
     let query: String
     /// Known up front when the user typed a handle; nil for short links.
     let handle: String?
+    /// A live profile, or an archive read from the phone.
+    var kind: Kind = .live
+
+    enum Kind: Hashable {
+        case live, archive
+    }
 }
 
 @MainActor
@@ -43,6 +49,10 @@ final class AppModel: ObservableObject {
     }
 
     func popToRoot() { path.removeAll() }
+
+    func openArchive(_ handle: String) {
+        path.append(Route(query: handle, handle: handle, kind: .archive))
+    }
 
     /// ninjaview://open?q=<username or link>, ninjaview://@handle, ninjaview://user/<handle>
     func handleDeepLink(_ url: URL) {

@@ -3,12 +3,13 @@ import SwiftUI
 /// Comments for one post, read from tik.ninja's comments panel.
 @MainActor
 final class CommentsModel: ObservableObject {
-    private let engine: ProfileEngine
     private let feed: FeedModel
     let index: Int
     /// The post's comment count as tik.ninja shows it ("35", "1.2K").
     let countLabel: String?
     private let expectedTotal: Int?
+    /// Comments come from a downloaded copy instead of tik.ninja's page.
+    let offline: Bool
 
     @Published private(set) var comments: [CommentItem] = []
     @Published private(set) var isLoading = true
@@ -22,13 +23,22 @@ final class CommentsModel: ObservableObject {
     /// "1 reply" labels, remembered because tik.ninja swaps them for "Hide replies" once opened.
     private var replyLabels: [Int: String] = [:]
 
-    init(engine: ProfileEngine, feed: FeedModel, index: Int) {
-        self.engine = engine
+    init(feed: FeedModel, index: Int) {
         self.feed = feed
         self.index = index
         let label = feed.details[index]?.stat("comments")
         countLabel = label
         expectedTotal = label.flatMap { CompactNumber.parse($0) }
+        let saved = feed.savedPost(at: index)
+        let useSaved = saved.map { !$0.comments.isEmpty || feed.engine == nil } ?? (feed.engine == nil)
+        offline = useSaved
+        if useSaved {
+            comments = saved?.comments ?? []
+            note = saved?.commentsNote ?? ""
+            isLoading = false
+            exhausted = true
+            started = true
+        }
     }
 
     func start() async {
@@ -37,6 +47,7 @@ final class CommentsModel: ObservableObject {
         isLoading = true
         error = nil
         do {
+            guard let engine = feed.engine else { throw EngineError.page("closed") }
             try await feed.ensureOpen(index)
             apply(try await engine.openComments(), previous: nil)
         } catch {
@@ -51,7 +62,8 @@ final class CommentsModel: ObservableObject {
     }
 
     func loadMoreIfNeeded(after comment: CommentItem) async {
-        guard comment.index >= comments.count - 3, !exhausted, !isLoadingMore, !isLoading else { return }
+        guard comment.index >= comments.count - 3, !exhausted, !isLoadingMore, !isLoading,
+              let engine = feed.engine else { return }
         isLoadingMore = true
         let before = comments.count
         do {
@@ -86,6 +98,10 @@ final class CommentsModel: ObservableObject {
     }
 
     func replyLabel(for comment: CommentItem) -> String? {
+        if offline {
+            guard !comment.replies.isEmpty else { return nil }
+            return comment.replies.count == 1 ? "1 reply" : "\(comment.replies.count) replies"
+        }
         let label = comment.replyLabel.isEmpty ? (replyLabels[comment.index] ?? "") : comment.replyLabel
         if !label.isEmpty { return label }
         if comment.replies.isEmpty { return nil }
@@ -97,10 +113,11 @@ final class CommentsModel: ObservableObject {
             expanded.remove(comment.index)
             return
         }
-        if !comment.replies.isEmpty {
+        if !comment.replies.isEmpty || offline {
             expanded.insert(comment.index)
             return
         }
+        guard let engine = feed.engine else { return }
         loadingReplies.insert(comment.index)
         defer { loadingReplies.remove(comment.index) }
         do {
@@ -112,6 +129,7 @@ final class CommentsModel: ObservableObject {
     }
 
     func moreReplies(_ comment: CommentItem) async {
+        guard !offline, let engine = feed.engine else { return }
         loadingReplies.insert(comment.index)
         defer { loadingReplies.remove(comment.index) }
         do {
@@ -133,8 +151,8 @@ struct CommentsSheet: View {
     private let onOpenProfile: (String) -> Void
     @Environment(\.dismiss) private var dismiss
 
-    init(engine: ProfileEngine, feed: FeedModel, index: Int, onOpenProfile: @escaping (String) -> Void) {
-        _model = StateObject(wrappedValue: CommentsModel(engine: engine, feed: feed, index: index))
+    init(feed: FeedModel, index: Int, onOpenProfile: @escaping (String) -> Void) {
+        _model = StateObject(wrappedValue: CommentsModel(feed: feed, index: index))
         self.onOpenProfile = onOpenProfile
     }
 

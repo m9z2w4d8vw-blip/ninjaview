@@ -109,8 +109,12 @@ final class ProfileEngine: ObservableObject {
     private var generation = 0
     private var slowTask: Task<Void, Never>?
 
-    init(route: Route) {
+    /// Background downloads run headless: no history entries, and page dialogs are dismissed.
+    let headless: Bool
+
+    init(route: Route, headless: Bool = false) {
         self.route = route
+        self.headless = headless
         bridge = PageBridge(WebFactory.shared.dequeue())
         bridge.delegate = self
     }
@@ -161,7 +165,7 @@ final class ProfileEngine: ObservableObject {
                 tabs = [:]
                 analytics = nil
                 phase = .ready
-                AppModel.shared.didLoad(profile)
+                if !headless { AppModel.shared.didLoad(profile) }
                 if let item = result.item { linkedPost = item }
                 await load(selectedTab)
             } else if let item = result.item {
@@ -340,6 +344,20 @@ final class ProfileEngine: ObservableObject {
         return comment
     }
 
+    /// The comments panel as it stands, without clicking anything.
+    func commentsState() async throws -> CommentsSnapshot {
+        let json = try await runner.run { [bridge] in
+            try await bridge.call("return JSON.stringify(window.__nv.commentsState());")
+        }
+        return try bridge.decode(CommentsSnapshot.self, json)
+    }
+
+    func closeComments() async {
+        _ = try? await runner.run { [bridge] in
+            try await bridge.call("return JSON.stringify(await window.__nv.closeComments());")
+        }
+    }
+
     // MARK: Analytics
 
     func loadAnalytics() async {
@@ -423,6 +441,11 @@ extension ProfileEngine: PageBridgeDelegate {
     }
 
     func bridgePresent(_ dialog: JSDialog) {
+        if headless {
+            DebugLog.shared.add(.js, "Dismissed a page dialog during a download: \(dialog.message)")
+            dialog.complete(true)
+            return
+        }
         self.dialog = dialog
     }
 }
