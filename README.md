@@ -30,6 +30,17 @@ If the build fails, open the failed run. The **Summarize compiler errors** step 
 - Under each post: comments (with reply threads), share, audio (through tik.ninja's own download) and save to Photos. The ... menu has the same, plus copying the caption. Tapping an @mention in a caption opens that profile.
 - Tapping a follower, a followed account or a commenter opens their profile.
 
+### Instagram
+
+Switch the home screen to **Instagram** and enter a username, @username or an instagram.com profile link. Instagram profiles come from insta-stories-viewer.com, loaded in a hidden page like tik.ninja is for TikTok; everything you see is native.
+
+- **Stories and posts.** The profile shows the header, a row of current stories and a grid of posts. Tap a story (or the picture, when it has a pink ring) for full-screen stories that move on by themselves, or a post to page through posts. Swipe down to close; save to Photos or share from the bottom bar. The site lists an account's newest posts (12 at a time); **Show more posts** asks it for more when it has them.
+- **Archive.** **Archive** on a profile saves its current stories and posts to **Documents/Instagram/<username>/** (also in the Files app under On My iPhone > NinjaView > Instagram). **Update** adds only what's new, so stories stay in the archive after they disappear from Instagram. Archived accounts are listed on the home screen; they open offline.
+- **Notifications.** The bell on an Instagram profile offers **Posts** and **Stories**. Checks use the same schedule and modes as TikTok. When a watched account also has an archive, every check saves its new stories and posts into the archive, which is the reliable way to keep stories: they're saved within about one check interval of appearing.
+- **Checks by the site.** If insta-stories-viewer.com asks to confirm you're a person, the profile says so; tap **Open the page**, finish the check, and close it. Automatic checks rest when the site refuses requests, the same way they do for tik.ninja.
+
+The Instagram engine (`Sources/Instagram/IGAssets.swift`) is byte-identical to `igengine.js`, which was tested in Chromium against five saved insta-stories-viewer.com pages (stories, the story viewer, posts and the post viewer) plus simulated private, empty, retry, captcha and missing-account states.
+
 ### New-post notifications
 
 Tap the **bell** on a profile to choose what that account notifies you about: **Posts**, **Stories** and **Reposts** (the three tik.ninja tabs, each checked separately and only if it's turned on). The bell turns pink, a line under the profile's buttons says which kinds are on, and a small pink bell appears on that account's picture on the home screen. Manage the list, change an account, or tap **Check now** under **Settings > Notifications > Watched accounts**. The first check of each kind is silent, so posts that were already there don't notify. Allow notifications when asked.

@@ -9,6 +9,9 @@ struct HomeView: View {
     @FocusState private var fieldFocused: Bool
     @ObservedObject private var archives = ProfileStore.archive
     @State private var pendingDelete: StoredProfile? = nil
+    @ObservedObject private var igArchives = IGArchive.shared
+    @State private var pendingIGDelete: IGArchive.Account? = nil
+    @AppStorage("searchPlatform") private var platformRaw = Platform.tiktok.rawValue
 
     var body: some View {
         List {
@@ -34,7 +37,7 @@ struct HomeView: View {
                 }
             }
 
-            if !archiveList.isEmpty {
+            if !archiveList.isEmpty || !igArchives.accounts.isEmpty {
                 Section {
                     ForEach(archiveList) { profile in
                         Button { app.openArchive(profile.handle) } label: {
@@ -47,6 +50,21 @@ struct HomeView: View {
                         .listRowInsets(EdgeInsets(top: 8, leading: 20, bottom: 8, trailing: 20))
                         .swipeActions {
                             Button { pendingDelete = profile } label: {
+                                Label("Delete", systemImage: "trash")
+                            }
+                            .tint(.red)
+                        }
+                    }
+                    ForEach(igArchives.sortedAccounts) { account in
+                        Button { app.openInstagramArchive(account.handle) } label: {
+                            IGArchiveRow(account: account)
+                        }
+                        .buttonStyle(.plain)
+                        .listRowBackground(Color.nvPaper)
+                        .listRowSeparatorTint(Color.nvRule)
+                        .listRowInsets(EdgeInsets(top: 8, leading: 20, bottom: 8, trailing: 20))
+                        .swipeActions {
+                            Button { pendingIGDelete = account } label: {
                                 Label("Delete", systemImage: "trash")
                             }
                             .tint(.red)
@@ -104,6 +122,11 @@ struct HomeView: View {
         } message: { _ in
             Text("Its saved videos, photos and comments will be removed from this iPhone.")
         }
+        .confirmationDialog("Delete this archive?", isPresented: igDeleteShown, titleVisibility: .visible, presenting: pendingIGDelete) { account in
+            Button("Delete @\(account.handle)", role: .destructive) { IGArchive.shared.delete(account.handle) }
+        } message: { _ in
+            Text("Its saved stories and posts will be removed from this iPhone.")
+        }
     }
 
     private var archiveList: [StoredProfile] {
@@ -116,15 +139,28 @@ struct HomeView: View {
 
     private var trimmed: String { query.trimmingCharacters(in: .whitespacesAndNewlines) }
 
+    private var platform: Platform { Platform(rawValue: platformRaw) ?? .tiktok }
+
+    private var igDeleteShown: Binding<Bool> {
+        Binding(get: { pendingIGDelete != nil }, set: { if !$0 { pendingIGDelete = nil } })
+    }
+
     private var searchArea: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("View public TikTok profiles without an account.")
+            Picker("Site", selection: $platformRaw) {
+                ForEach(Platform.allCases) { site in
+                    Text(site.title).tag(site.rawValue)
+                }
+            }
+            .pickerStyle(.segmented)
+
+            Text(platform == .instagram ? "View public Instagram stories and posts without an account." : "View public TikTok profiles without an account.")
                 .font(.subheadline)
                 .foregroundStyle(Color.nvMuted)
 
             HStack(spacing: 0) {
                 // A hand-made binding so only typing (not a paste) clears the warning.
-                TextField("@username or TikTok link", text: Binding(get: { query }, set: { query = $0; rejected = false }))
+                TextField(platform == .instagram ? "@username or Instagram link" : "@username or TikTok link", text: Binding(get: { query }, set: { query = $0; rejected = false }))
                     .font(.mono(.body))
                     .foregroundStyle(Color.nvInk)
                     .textInputAutocapitalization(.never)
@@ -169,7 +205,7 @@ struct HomeView: View {
                 .buttonBorderShape(.roundedRectangle(radius: 4))
                 .tint(Color.nvInk)
                 if rejected {
-                    Text("Enter a username or a tiktok.com link.")
+                    Text(platform == .instagram ? "Enter a username or an instagram.com profile link." : "Enter a username or a tiktok.com link.")
                         .font(.footnote)
                         .foregroundStyle(Color.nvSignal)
                 }
@@ -178,7 +214,7 @@ struct HomeView: View {
     }
 
     private func row(_ item: SavedProfile, showsDate: Bool) -> some View {
-        Button { _ = app.open("@" + item.handle) } label: {
+        Button { app.reopen(item) } label: {
             SavedRow(item: item, showsDate: showsDate)
         }
         .buttonStyle(.plain)
@@ -194,7 +230,7 @@ struct HomeView: View {
 
     private func submit() {
         guard !trimmed.isEmpty else { return }
-        if app.open(trimmed) {
+        if app.open(trimmed, platform: platform) {
             query = ""
             rejected = false
             fieldFocused = false

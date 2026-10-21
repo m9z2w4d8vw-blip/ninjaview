@@ -146,7 +146,7 @@ struct AvatarView: View {
                     .scaledToFill()
             } else {
                 Color.nvRule
-                Text(String(handle.prefix(1)).uppercased())
+                Text(String(handle.replacingOccurrences(of: "ig~", with: "").prefix(1)).uppercased())
                     .font(.mono(.headline, weight: .bold))
                     .foregroundStyle(Color.nvMuted)
             }
@@ -163,10 +163,10 @@ struct SavedRow: View {
 
     var body: some View {
         HStack(spacing: 12) {
-            AvatarView(handle: item.handle)
+            AvatarView(handle: item.id)
                 .frame(width: 42, height: 42)
                 .overlay(alignment: .bottomTrailing) {
-                    WatchBadge(handle: item.handle)
+                    WatchBadge(handle: item.handle, platform: item.site)
                         .offset(x: 3, y: 3)
                 }
             VStack(alignment: .leading, spacing: 2) {
@@ -184,6 +184,11 @@ struct SavedRow: View {
                         .font(.mono(.footnote))
                         .foregroundStyle(Color.nvSignal)
                         .lineLimit(1)
+                }
+                if item.site == .instagram {
+                    Text("Instagram")
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(Color.nvMuted)
                 }
             }
             Spacer(minLength: 8)

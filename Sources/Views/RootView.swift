@@ -14,6 +14,10 @@ struct RootView: View {
                         ProfileScreen(route: route)
                     case .archive:
                         ArchiveProfileView(handle: route.handle ?? route.query)
+                    case .instagram:
+                        IGProfileScreen(route: route)
+                    case .instagramArchive:
+                        IGArchiveScreen(handle: route.handle ?? route.query)
                     case .posts:
                         if let feed = FeedRegistry.shared.feed(for: route.id) {
                             PostFeedScreen(feed: feed)

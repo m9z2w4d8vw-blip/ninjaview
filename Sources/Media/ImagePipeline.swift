@@ -49,6 +49,7 @@ final class ImagePipeline {
         var request = URLRequest(url: url)
         if url.scheme?.lowercased().hasPrefix("http") == true {
             request.setValue(WebFactory.userAgent, forHTTPHeaderField: "User-Agent")
+            if let referer = LinkRules.referer(for: url) { request.setValue(referer, forHTTPHeaderField: "Referer") }
             if LinkRules.isTikNinja(url), let cookie = await CookieBridge.header(for: url) {
                 request.setValue(cookie, forHTTPHeaderField: "Cookie")
             }

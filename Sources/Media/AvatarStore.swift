@@ -43,6 +43,7 @@ final class AvatarStore: ObservableObject {
             do {
                 var request = URLRequest(url: url)
                 request.setValue(WebFactory.userAgent, forHTTPHeaderField: "User-Agent")
+                if let referer = LinkRules.referer(for: url) { request.setValue(referer, forHTTPHeaderField: "Referer") }
                 let (data, _) = try await self.session.data(for: request)
                 guard let image = UIImage(data: data) else { return }
                 let thumb = image.preparingThumbnail(of: CGSize(width: 160, height: 160)) ?? image

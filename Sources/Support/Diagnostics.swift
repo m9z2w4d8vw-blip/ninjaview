@@ -48,12 +48,17 @@ enum Diagnostics {
             lines.append("  @\(profile.handle): \(profile.status.rawValue), \(profile.savedPostCount) posts, \(bytes(profile.bytes)), updated \(profile.updatedAt.formatted(date: .abbreviated, time: .shortened))")
         }
         lines.append("Settings: appearance \(settings.appearance.rawValue), history \(onOff(settings.keepHistory)), ad blocking \(onOff(settings.blockAds)), tidy page \(onOff(settings.cleanLayout)), offline copies \(onOff(settings.prefetch)), comments \(onOff(settings.saveComments)), follower lists \(onOff(settings.saveLists))")
-        lines.append("Open: \(EngineRegistry.shared.count) profile pages, \(FeedRegistry.shared.count) post lists")
+        lines.append("Open: \(EngineRegistry.shared.count) profile pages, \(FeedRegistry.shared.count) post lists, \(IGRegistry.shared.count) Instagram pages")
+        let igArchives = IGArchive.shared.sortedAccounts
+        lines.append("Instagram archives: \(igArchives.count)")
+        for account in igArchives {
+            lines.append("  @\(account.handle): \(account.stories.count) stories, \(account.posts.count) posts, \(bytes(IGArchive.shared.size(account.handle)))\(account.note.isEmpty ? "" : ", note: " + account.note)")
+        }
         let watch = WatchCenter.shared
         lines.append("Watching: \(watch.count) accounts, notifications \(onOff(watch.enabled)), \(watch.mode.rawValue) mode, every \(Int(watch.pollInterval))s, keeping awake: \(watch.keepAwakeStatus.lowercased()), watchdog \(onOff(watch.watchdog)), time-sensitive \(onOff(watch.timeSensitive))")
         for entry in watch.watched {
             let checked = entry.lastChecked?.formatted(date: .abbreviated, time: .shortened) ?? "never"
-            lines.append("  @\(entry.handle): \(Activity.list(entry.activities).lowercased()); first look done for \(Activity.list(entry.baselined).lowercased()); last checked \(checked)")
+            lines.append("  \(entry.label): \(Activity.list(entry.activities).lowercased()); first look done for \(Activity.list(entry.baselined).lowercased()); last checked \(checked)")
         }
         if let until = watch.restingUntil, until > Date() {
             lines.append("  Automatic checks paused until \(until.formatted(date: .omitted, time: .shortened)) (tik.ninja rate limit)")

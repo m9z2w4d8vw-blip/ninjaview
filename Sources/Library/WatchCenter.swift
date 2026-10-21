@@ -59,6 +59,11 @@ enum Activity: String, CaseIterable, Codable, Identifiable {
         }
     }
 
+    /// What each site can notify about: Instagram has no reposts tab.
+    static func kinds(for platform: Platform) -> [Activity] {
+        platform == .instagram ? [.video, .story] : allCases
+    }
+
     /// "Posts, Stories and Reposts", in tab order.
     static func list(_ kinds: Set<Activity>) -> String {
         let names = allCases.filter { kinds.contains($0) }.map(\.title)
@@ -86,6 +91,7 @@ final class WatchCenter: ObservableObject {
     struct Watched: Codable, Identifiable {
         var handle: String
         var name: String
+        var platform: Platform
         /// Which kinds of activity notify. Turning the last one off stops watching the account.
         var activities: Set<Activity>
         var seenVideoKeys: [String] = []
@@ -95,17 +101,20 @@ final class WatchCenter: ObservableObject {
         var baselined: Set<Activity> = []
         var lastChecked: Date?
         var addedAt: Date
-        var id: String { handle.lowercased() }
+        /// TikTok entries keep the bare handle as their key, exactly as before Instagram support.
+        var id: String { platform.key(handle) }
+        var label: String { platform == .instagram ? "@\(handle) on Instagram" : "@\(handle)" }
 
-        init(handle: String, name: String, activities: Set<Activity>) {
+        init(handle: String, name: String, activities: Set<Activity>, platform: Platform = .tiktok) {
             self.handle = handle
             self.name = name
+            self.platform = platform
             self.activities = activities
             self.addedAt = Date()
         }
 
         private enum CodingKeys: String, CodingKey {
-            case handle, name, activities, seenVideoKeys, seenStoryKeys, seenRepostKeys, baselined, lastChecked, addedAt
+            case handle, name, platform, activities, seenVideoKeys, seenStoryKeys, seenRepostKeys, baselined, lastChecked, addedAt
         }
 
         /// Tolerant decoding: a field added later, or stored differently by an earlier build,
@@ -114,6 +123,7 @@ final class WatchCenter: ObservableObject {
             let c = try decoder.container(keyedBy: CodingKeys.self)
             handle = try c.decode(String.self, forKey: .handle)
             name = (try? c.decode(String.self, forKey: .name)) ?? ""
+            platform = (try? c.decode(Platform.self, forKey: .platform)) ?? .tiktok
             let kinds = (try? c.decode(Set<Activity>.self, forKey: .activities)) ?? []
             activities = kinds.isEmpty ? Set(Activity.allCases) : kinds
             seenVideoKeys = (try? c.decode([String].self, forKey: .seenVideoKeys)) ?? []
@@ -140,6 +150,15 @@ final class WatchCenter: ObservableObject {
             case .repost: seenRepostKeys = keys
             }
         }
+    }
+
+    /// What one site said about an account's tabs.
+    private struct Reading {
+        var current: [Activity: [String]] = [:]
+        var name = ""
+        var refused = false
+        /// Set when the account itself couldn't be read.
+        var failure: String? = nil
     }
 
     /// How one account's check went.
@@ -196,11 +215,14 @@ final class WatchCenter: ObservableObject {
 
     var count: Int { watched.count }
 
-    func activities(for handle: String) -> Set<Activity> {
-        watched.first { $0.id == handle.lowercased() }?.activities ?? []
+    func activities(for handle: String, platform: Platform = .tiktok) -> Set<Activity> {
+        let key = platform.key(handle)
+        return watched.first { $0.id == key }?.activities ?? []
     }
 
-    func isWatched(_ handle: String) -> Bool { !activities(for: handle).isEmpty }
+    func isWatched(_ handle: String, platform: Platform = .tiktok) -> Bool {
+        !activities(for: handle, platform: platform).isEmpty
+    }
 
     var isResting: Bool { (restingUntil ?? .distantPast) > Date() }
 
@@ -227,7 +249,7 @@ final class WatchCenter: ObservableObject {
             applyMonitoring()
             // Opening the app gives a fresh check even if the loop was already running.
             if loopWasRunning, Date().timeIntervalSince(lastCheckAt ?? .distantPast) > 10 {
-                Task { await runChecks(handles: oldestFirst(limit: 8), trigger: .foreground, budget: 120) }
+                Task { await runChecks(keys: oldestFirst(limit: 8), trigger: .foreground, budget: 120) }
             }
         case .background:
             isActive = false
@@ -242,26 +264,27 @@ final class WatchCenter: ObservableObject {
 
     /// Turns one kind of notification on or off for an account. Returns false, changing nothing,
     /// if iOS doesn't allow NinjaView's notifications.
-    func set(_ kind: Activity, _ on: Bool, handle: String, name: String) async -> Bool {
+    func set(_ kind: Activity, _ on: Bool, handle: String, name: String, platform: Platform = .tiktok) async -> Bool {
         if on {
             guard await NotificationManager.shared.requestAuthorization() else { return false }
             if !enabled { enabled = true; persistEnabled() }
         }
-        let key = handle.lowercased()
+        let key = platform.key(handle)
         if let index = watched.firstIndex(where: { $0.id == key }) {
             var entry = watched[index]
             if on { entry.activities.insert(kind) } else { entry.activities.remove(kind) }
             if entry.activities.isEmpty {
                 watched.remove(at: index)
-                DebugLog.shared.add(.watch, "Stopped watching @\(entry.handle)")
+                DebugLog.shared.add(.watch, "Stopped watching \(entry.label)")
             } else {
                 if !name.isEmpty { entry.name = name }
                 watched[index] = entry
-                DebugLog.shared.add(.watch, "@\(entry.handle) now notifies about \(Activity.list(entry.activities).lowercased())")
+                DebugLog.shared.add(.watch, "\(entry.label) now notifies about \(Activity.list(entry.activities).lowercased())")
             }
         } else if on {
-            watched.append(Watched(handle: handle, name: name, activities: [kind]))
-            DebugLog.shared.add(.watch, "Watching @\(handle) for \(kind.title.lowercased()) (\(watched.count) accounts)")
+            let entry = Watched(handle: handle, name: name, activities: [kind], platform: platform)
+            watched.append(entry)
+            DebugLog.shared.add(.watch, "Watching \(entry.label) for \(kind.title.lowercased()) (\(watched.count) accounts)")
         } else {
             return true
         }
@@ -269,15 +292,16 @@ final class WatchCenter: ObservableObject {
         applyMonitoring()
         if on {
             // A silent first look at the newly turned-on kind, so what's already there doesn't notify.
-            Task { _ = await checkOne(handle, deadline: Date().addingTimeInterval(60)) }
+            Task { _ = await checkOne(key, deadline: Date().addingTimeInterval(60)) }
         }
         return true
     }
 
-    func unwatch(_ handle: String) {
-        watched.removeAll { $0.id == handle.lowercased() }
+    func unwatch(_ handle: String, platform: Platform = .tiktok) {
+        let key = platform.key(handle)
+        watched.removeAll { $0.id == key }
         persistWatched()
-        DebugLog.shared.add(.watch, "Stopped watching @\(handle)")
+        DebugLog.shared.add(.watch, "Stopped watching \(platform == .instagram ? "@\(handle) on Instagram" : "@\(handle)")")
         applyMonitoring()
     }
 
@@ -328,7 +352,7 @@ final class WatchCenter: ObservableObject {
                     self.keepAliveRunning = self.keepAlive.start()
                 }
                 if self.enabled && !self.watched.isEmpty {
-                    await self.runChecks(handles: self.watched.map(\.handle),
+                    await self.runChecks(keys: self.watched.map(\.id),
                                          trigger: self.isActive ? .foreground : .instant,
                                          budget: 600)
                 }
@@ -351,7 +375,7 @@ final class WatchCenter: ObservableObject {
 
     /// Every watched account, now (the "Check now" button). Runs even while resting.
     func checkNow() async {
-        await runChecks(handles: watched.map(\.handle), trigger: .manual, budget: 240)
+        await runChecks(keys: watched.map(\.id), trigger: .manual, budget: 240)
     }
 
     /// Called by the background tasks. Short, cancellation-aware, and always reschedules.
@@ -359,7 +383,7 @@ final class WatchCenter: ObservableObject {
         DebugLog.shared.add(.watch, "\(trigger.rawValue) woke up")
         if enabled, !watched.isEmpty {
             let processing = trigger == .backgroundProcessing
-            await runChecks(handles: oldestFirst(limit: processing ? 20 : 6),
+            await runChecks(keys: oldestFirst(limit: processing ? 20 : 6),
                             trigger: trigger,
                             budget: processing ? 170 : 25)
         }
@@ -372,10 +396,10 @@ final class WatchCenter: ObservableObject {
     private func oldestFirst(limit: Int) -> [String] {
         watched.sorted { ($0.lastChecked ?? .distantPast) < ($1.lastChecked ?? .distantPast) }
             .prefix(limit)
-            .map(\.handle)
+            .map(\.id)
     }
 
-    private func runChecks(handles: [String], trigger: CheckTrigger, budget: Double) async {
+    private func runChecks(keys: [String], trigger: CheckTrigger, budget: Double) async {
         guard !isRunning else { return }
         if trigger != .manual, isResting {
             DebugLog.shared.add(.watch, "\(trigger.rawValue) check skipped: tik.ninja asked to slow down, resuming at \(Self.clock(restingUntil))")
@@ -387,11 +411,11 @@ final class WatchCenter: ObservableObject {
         let overall = Date().addingTimeInterval(budget)
         var checked = 0, found = 0, failed = 0
         var refused = false
-        for handle in handles {
+        for key in keys {
             if Task.isCancelled || Date() > overall { break }
             // Leave room so the last account doesn't overrun a short background budget.
             let perAccount = min(overall, Date().addingTimeInterval(45))
-            switch await checkOne(handle, deadline: perAccount) {
+            switch await checkOne(key, deadline: perAccount) {
             case .checked(let fresh):
                 checked += 1
                 found += fresh
@@ -423,39 +447,27 @@ final class WatchCenter: ObservableObject {
         DebugLog.shared.add(.watch, "\(trigger.rawValue) check: \(summary)", level: failed > 0 ? .warning : .info)
     }
 
-    /// One account: reads the tabs for the kinds it watches, notifies about anything new, and
-    /// records what it saw. A kind is only compared, or given its silent first look, when its tab
-    /// loaded cleanly, so a rate-limited or half-loaded tab can't make old posts look new later.
-    private func checkOne(_ handle: String, deadline: Date) async -> Outcome {
-        let key = handle.lowercased()
+    /// One account: reads the tabs for the kinds it watches (from TikTok or Instagram), notifies
+    /// about anything new, and records what it saw. A kind is only compared, or given its silent
+    /// first look, when its tab loaded cleanly, so a refused or half-loaded tab can't make old posts
+    /// look new later.
+    private func checkOne(_ key: String, deadline: Date) async -> Outcome {
         guard let start = watched.first(where: { $0.id == key }), !inFlight.contains(key) else { return .skipped }
         inFlight.insert(key)
         defer { inFlight.remove(key) }
-        let kinds = Activity.allCases.filter { start.activities.contains($0) }
+        let kinds = Activity.kinds(for: start.platform).filter { start.activities.contains($0) }
         let started = Date()
-        let engine = ProfileEngine(route: Route(query: handle, handle: handle), headless: true)
-        engine.start()
-        guard await waitUntilReady(engine, until: deadline), let header = engine.header else {
-            let reason = Self.failureText(engine.phase)
-            engine.teardown()
-            DebugLog.shared.warn(.watch, "Couldn't reach @\(handle) in \(Self.ms(started)) ms: \(reason)")
-            return Self.isRefusal(reason) ? .refused : .failed
+        let reading: Reading
+        if start.platform == .instagram {
+            reading = await readInstagram(start.handle, kinds: kinds, deadline: deadline)
+        } else {
+            reading = await readTikTok(start.handle, kinds: kinds, deadline: deadline)
         }
-
-        var current: [Activity: [String]] = [:]
-        var refused = false
-        for kind in kinds {
-            if Task.isCancelled || Date() > deadline { break }
-            await engine.load(kind.tab)
-            let state = engine.tabs[kind.tab]
-            if let problem = Self.tabProblem(state) {
-                DebugLog.shared.warn(.watch, "@\(handle) \(kind.title.lowercased()) not used this time: \(problem)")
-                if Self.isRefusal(problem) { refused = true; break }
-                continue
-            }
-            current[kind] = (state?.items ?? []).prefix(24).map { StableKey.of($0, tab: kind.tab) }
+        if let failure = reading.failure {
+            DebugLog.shared.warn(.watch, "Couldn't reach \(start.label) in \(Self.ms(started)) ms: \(failure)")
+            return reading.refused ? .refused : .failed
         }
-        engine.teardown()
+        let current = reading.current
 
         guard let index = watched.firstIndex(where: { $0.id == key }) else { return .skipped }
         var entry = watched[index]
@@ -468,8 +480,8 @@ final class WatchCenter: ObservableObject {
             if entry.baselined.contains(kind) {
                 if !fresh.isEmpty {
                     totalNew += fresh.count
-                    NotificationManager.shared.notify(handle: entry.handle, name: entry.name,
-                                                      activity: kind, count: fresh.count, timeSensitive: timeSensitive)
+                    NotificationManager.shared.notify(handle: entry.handle, name: entry.name, activity: kind,
+                                                      count: fresh.count, timeSensitive: timeSensitive, platform: entry.platform)
                 }
             } else {
                 firstLooks.append(kind.title.lowercased())
@@ -481,13 +493,77 @@ final class WatchCenter: ObservableObject {
             entry.setSeen(kind, Array(merged.prefix(seenCap)))
         }
         if !current.isEmpty { entry.lastChecked = Date() }
-        if !header.name.isEmpty { entry.name = header.name }
+        if !reading.name.isEmpty { entry.name = reading.name }
         watched[index] = entry
         persistWatched()
         let note = firstLooks.isEmpty ? "" : " (silent first look at \(firstLooks.joined(separator: ", ")))"
-        DebugLog.shared.add(.watch, "Checked @\(handle): \(totalNew) new\(note), \(current.count) of \(kinds.count) tabs usable, \(Self.ms(started)) ms")
-        if refused { return .refused }
+        DebugLog.shared.add(.watch, "Checked \(entry.label): \(totalNew) new\(note), \(current.count) of \(kinds.count) tabs usable, \(Self.ms(started)) ms")
+        if reading.refused { return .refused }
         return current.isEmpty ? .failed : .checked(totalNew)
+    }
+
+    private func readTikTok(_ handle: String, kinds: [Activity], deadline: Date) async -> Reading {
+        var reading = Reading()
+        let engine = ProfileEngine(route: Route(query: handle, handle: handle), headless: true)
+        engine.start()
+        guard await waitUntilReady(engine, until: deadline), let header = engine.header else {
+            let reason = Self.failureText(engine.phase)
+            engine.teardown()
+            reading.failure = reason
+            reading.refused = Self.isRefusal(reason)
+            return reading
+        }
+        reading.name = header.name
+        for kind in kinds {
+            if Task.isCancelled || Date() > deadline { break }
+            await engine.load(kind.tab)
+            let state = engine.tabs[kind.tab]
+            if let problem = Self.tabProblem(state) {
+                DebugLog.shared.warn(.watch, "@\(handle) \(kind.title.lowercased()) not used this time: \(problem)")
+                if Self.isRefusal(problem) { reading.refused = true; break }
+                continue
+            }
+            reading.current[kind] = (state?.items ?? []).prefix(24).map { StableKey.of($0, tab: kind.tab) }
+        }
+        engine.teardown()
+        return reading
+    }
+
+    /// Instagram through the viewer site. When the account has an archive, whatever new stories
+    /// and posts this check saw are saved into it too, so stories are kept before they expire.
+    private func readInstagram(_ handle: String, kinds: [Activity], deadline: Date) async -> Reading {
+        var reading = Reading()
+        let engine = IGEngine(handle: handle, headless: true)
+        defer { engine.teardown() }
+        let budget = max(8, deadline.timeIntervalSinceNow - 2)
+        guard let profile = await engine.readProfile(timeout: min(25, budget)), engine.phase == .ready else {
+            let problem = engine.problem.isEmpty ? "no answer before the time limit" : engine.problem
+            reading.failure = problem
+            reading.refused = engine.isCaptcha || Self.isRefusal(problem)
+            return reading
+        }
+        var stories: [IGItem] = []
+        var posts: [IGItem] = []
+        for kind in kinds {
+            if Task.isCancelled || Date() > deadline { break }
+            let tabKind: IGKind = kind == .story ? .stories : .posts
+            let left = max(6, min(25, deadline.timeIntervalSinceNow - 1))
+            guard let tab = await engine.readTab(tabKind, timeout: left) else { continue }
+            if tab.isClean {
+                reading.current[kind] = tab.items.map(\.key)
+                if kind == .story { stories = tab.items } else { posts = tab.items }
+            } else {
+                DebugLog.shared.warn(.watch, "@\(handle) on Instagram, \(kind.title.lowercased()) not used this time: \(tab.message.isEmpty ? tab.status : tab.message)")
+                if tab.status == "captcha" || Self.isRefusal(tab.message) {
+                    reading.refused = true
+                    break
+                }
+            }
+        }
+        if IGArchive.shared.has(handle), !(stories.isEmpty && posts.isEmpty) {
+            await IGArchive.shared.absorb(profile, stories: stories, posts: posts)
+        }
+        return reading
     }
 
     private func waitUntilReady(_ engine: ProfileEngine, until deadline: Date) async -> Bool {

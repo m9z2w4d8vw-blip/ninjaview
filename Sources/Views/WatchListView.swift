@@ -27,10 +27,10 @@ struct WatchListView: View {
             }
             Section {
                 ForEach(watch.watched) { entry in
-                    Button { _ = app.open("@" + entry.handle) } label: { row(entry) }
+                    Button { open(entry) } label: { row(entry) }
                         .buttonStyle(.plain)
                         .swipeActions {
-                            Button(role: .destructive) { watch.unwatch(entry.handle) } label: {
+                            Button(role: .destructive) { watch.unwatch(entry.handle, platform: entry.platform) } label: {
                                 Label("Stop watching", systemImage: "bell.slash")
                             }
                             Button { editing = entry } label: {
@@ -61,21 +61,21 @@ struct WatchListView: View {
         .overlay {
             if watch.watched.isEmpty {
                 ContentUnavailableView("No watched accounts", systemImage: "bell",
-                    description: Text("Tap the bell on a profile and choose posts, stories or reposts."))
+                    description: Text("Tap the bell on a TikTok or Instagram profile and choose what it notifies you about."))
             }
         }
         .sheet(item: $editing) { entry in
-            NotifySheet(handle: entry.handle, name: entry.name)
+            NotifySheet(handle: entry.handle, name: entry.name, platform: entry.platform)
                 .environmentObject(AvatarStore.shared)
         }
     }
 
     private func row(_ entry: WatchCenter.Watched) -> some View {
         HStack(spacing: 12) {
-            AvatarView(handle: entry.handle)
+            AvatarView(handle: entry.id)
                 .frame(width: 42, height: 42)
                 .overlay(alignment: .bottomTrailing) {
-                    WatchBadge(handle: entry.handle)
+                    WatchBadge(handle: entry.handle, platform: entry.platform)
                         .offset(x: 3, y: 3)
                 }
             VStack(alignment: .leading, spacing: 2) {
@@ -97,8 +97,16 @@ struct WatchListView: View {
         .contentShape(Rectangle())
     }
 
+    private func open(_ entry: WatchCenter.Watched) {
+        if entry.platform == .instagram {
+            app.openInstagram(entry.handle)
+        } else {
+            _ = app.open("@" + entry.handle)
+        }
+    }
+
     private func subtitle(_ entry: WatchCenter.Watched) -> String {
-        var parts = ["@\(entry.handle)"]
+        var parts = [entry.label]
         if let last = entry.lastChecked {
             parts.append("checked \(last.formatted(.relative(presentation: .named)))")
         } else {

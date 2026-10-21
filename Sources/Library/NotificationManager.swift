@@ -32,16 +32,17 @@ final class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
         }
     }
 
-    func notify(handle: String, name: String, activity: Activity, count: Int, timeSensitive: Bool) {
+    func notify(handle: String, name: String, activity: Activity, count: Int, timeSensitive: Bool, platform: Platform = .tiktok) {
         let content = UNMutableNotificationContent()
-        content.title = name.isEmpty ? "@\(handle)" : "\(name) (@\(handle))"
+        let who = name.isEmpty ? "@\(handle)" : "\(name) (@\(handle))"
+        content.title = platform == .instagram ? who + " on Instagram" : who
         content.body = Self.body(for: activity, count: count)
         content.sound = .default
-        content.threadIdentifier = handle.lowercased()
-        content.userInfo = ["handle": handle]
+        content.threadIdentifier = platform.key(handle)
+        content.userInfo = ["handle": handle, "platform": platform.rawValue]
         // Takes effect only in the TrollStore build, which keeps the time-sensitive entitlement.
         if timeSensitive { content.interruptionLevel = .timeSensitive }
-        let request = UNNotificationRequest(identifier: "\(handle.lowercased())-\(activity.rawValue)-\(Date().timeIntervalSince1970)",
+        let request = UNNotificationRequest(identifier: "\(platform.key(handle))-\(activity.rawValue)-\(Date().timeIntervalSince1970)",
                                             content: content, trigger: nil)
         UNUserNotificationCenter.current().add(request)
         Task { @MainActor in DebugLog.shared.add(.watch, "Notified about @\(handle): \(content.body)") }
@@ -79,7 +80,15 @@ final class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
     // Tapping a notification opens that profile.
     func userNotificationCenter(_ notifications: UNUserNotificationCenter,
                                 didReceive response: UNNotificationResponse) async {
-        guard let handle = response.notification.request.content.userInfo["handle"] as? String else { return }
-        await MainActor.run { _ = AppModel.shared.open("@" + handle) }
+        let info = response.notification.request.content.userInfo
+        guard let handle = info["handle"] as? String else { return }
+        let instagram = (info["platform"] as? String) == Platform.instagram.rawValue
+        await MainActor.run {
+            if instagram {
+                AppModel.shared.openInstagram(handle)
+            } else {
+                _ = AppModel.shared.open("@" + handle)
+            }
+        }
     }
 }

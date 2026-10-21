@@ -144,10 +144,10 @@ final class PageBridge: NSObject {
         }
     }
 
-    func reload() {
+    func reload(fallback: URL? = nil) {
         isReady = false
         if webView.url == nil {
-            webView.load(URLRequest(url: WebFactory.homeURL))
+            webView.load(URLRequest(url: fallback ?? WebFactory.homeURL))
         } else {
             webView.reload()
         }
@@ -227,7 +227,7 @@ extension PageBridge: WKNavigationDelegate {
             DownloadCenter.shared.fetch(url, kind: .unknown, baseName: "tiktok")
             return .cancel
         }
-        if LinkRules.isTikNinja(url) { return .allow }
+        if LinkRules.isTikNinja(url) || IGLinks.isViewer(url) { return .allow }
         if LinkRules.isTikTok(url) {
             AppModel.shared.open(url.absoluteString)
             return .cancel

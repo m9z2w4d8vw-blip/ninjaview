@@ -60,7 +60,9 @@ final class ClipPlayer: ObservableObject {
         loadStarted = Date()
         DebugLog.shared.add(.player, "Loading \(url.isFileURL ? "saved file \(url.lastPathComponent)" : "video from \(url.host ?? "?")")")
         // Same user agent as the page, so the CDN sees an ordinary browser.
-        let asset = AVURLAsset(url: url, options: ["AVURLAssetHTTPHeaderFieldsKey": ["User-Agent": WebFactory.userAgent]])
+        var headers = ["User-Agent": WebFactory.userAgent]
+        if let referer = LinkRules.referer(for: url) { headers["Referer"] = referer }
+        let asset = AVURLAsset(url: url, options: ["AVURLAssetHTTPHeaderFieldsKey": headers])
         let item = AVPlayerItem(asset: asset)
         statusObservation = item.observe(\.status, options: [.new]) { [weak self] item, _ in
             let status = item.status

@@ -136,8 +136,12 @@ struct SavedProfile: Codable, Identifiable, Hashable {
     var handle: String
     var name: String
     var date: Date
+    /// nil for TikTok, which is what every row saved before Instagram support is.
+    var platform: Platform? = nil
 
-    var id: String { handle.lowercased() }
+    var site: Platform { platform ?? .tiktok }
+    /// Also the avatar key, so TikTok and Instagram accounts with the same name stay apart.
+    var id: String { site.key(handle) }
 }
 
 enum TikTokLinks {

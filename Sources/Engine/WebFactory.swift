@@ -23,6 +23,8 @@ final class WebFactory: NSObject {
     /// Cookies and site storage live in memory only and vanish when the app quits.
     private(set) var dataStore: WKWebsiteDataStore = .nonPersistent()
     private var ruleList: WKContentRuleList?
+    /// The compiled ad block list, for pages built outside this file (Instagram).
+    var blockRules: WKContentRuleList? { ruleList }
     private var compileTask: Task<Void, Never>?
     private var spare: PreparedWebView?
     private var spareTask: Task<Void, Never>?

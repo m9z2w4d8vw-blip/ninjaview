@@ -5,6 +5,7 @@ import UIKit
 struct NotifySheet: View {
     let handle: String
     let name: String
+    var platform: Platform = .tiktok
     @ObservedObject private var watch = WatchCenter.shared
     @Environment(\.dismiss) private var dismiss
     @State private var denied = false
@@ -15,7 +16,7 @@ struct NotifySheet: View {
             List {
                 Section {
                     HStack(spacing: 12) {
-                        AvatarView(handle: handle)
+                        AvatarView(handle: platform.key(handle))
                             .frame(width: 44, height: 44)
                         VStack(alignment: .leading, spacing: 2) {
                             Text(name.isEmpty ? "@\(handle)" : name)
@@ -30,7 +31,7 @@ struct NotifySheet: View {
                     }
                 }
                 Section {
-                    ForEach(Activity.allCases) { kind in
+                    ForEach(Activity.kinds(for: platform)) { kind in
                         Toggle(isOn: binding(for: kind)) {
                             Label {
                                 VStack(alignment: .leading, spacing: 1) {
@@ -79,11 +80,11 @@ struct NotifySheet: View {
 
     private func binding(for kind: Activity) -> Binding<Bool> {
         Binding(
-            get: { watch.activities(for: handle).contains(kind) },
+            get: { watch.activities(for: handle, platform: platform).contains(kind) },
             set: { on in
                 working = true
                 Task {
-                    let allowed = await watch.set(kind, on, handle: handle, name: name)
+                    let allowed = await watch.set(kind, on, handle: handle, name: name, platform: platform)
                     denied = !allowed
                     working = false
                     if allowed && on { UIImpactFeedbackGenerator(style: .light).impactOccurred() }
@@ -98,7 +99,13 @@ struct NotifySheet: View {
         } else {
             schedule = "NinjaView checks when you open it and when iOS wakes it in the background (Standard mode)."
         }
-        return schedule + " The first check of each kind is silent, so what's already there doesn't notify."
+        var text = schedule + " The first check of each kind is silent, so what's already there doesn't notify."
+        if platform == .instagram {
+            text += IGArchive.shared.has(handle)
+                ? " New stories and posts are also saved to this account's archive, so they stay after they expire."
+                : " Archive this account too and every new story gets saved before it disappears."
+        }
+        return text
     }
 }
 
@@ -106,10 +113,11 @@ struct NotifySheet: View {
 struct WatchBadge: View {
     let handle: String
     var size: CGFloat = 18
+    var platform: Platform = .tiktok
     @ObservedObject private var watch = WatchCenter.shared
 
     var body: some View {
-        if watch.isWatched(handle) {
+        if watch.isWatched(handle, platform: platform) {
             Image(systemName: "bell.fill")
                 .font(.system(size: size * 0.5, weight: .bold))
                 .foregroundStyle(Color.white)
@@ -124,11 +132,12 @@ struct WatchBadge: View {
 /// Under a profile's buttons: which kinds of activity notify. Tapping it changes them.
 struct WatchStatusLine: View {
     let handle: String
+    var platform: Platform = .tiktok
     let onTap: () -> Void
     @ObservedObject private var watch = WatchCenter.shared
 
     var body: some View {
-        let kinds = watch.activities(for: handle)
+        let kinds = watch.activities(for: handle, platform: platform)
         if !kinds.isEmpty {
             Button(action: onTap) {
                 HStack(spacing: 6) {

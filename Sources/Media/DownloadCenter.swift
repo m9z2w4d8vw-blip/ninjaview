@@ -132,6 +132,7 @@ final class DownloadCenter: NSObject, ObservableObject {
             } else {
                 var request = URLRequest(url: url)
                 request.setValue(WebFactory.userAgent, forHTTPHeaderField: "User-Agent")
+                if let referer = LinkRules.referer(for: url) { request.setValue(referer, forHTTPHeaderField: "Referer") }
                 let (downloaded, response) = try await session.download(for: request)
                 if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
                     try? FileManager.default.removeItem(at: downloaded)

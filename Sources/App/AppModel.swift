@@ -11,7 +11,7 @@ struct Route: Hashable, Identifiable {
     var kind: Kind = .live
 
     enum Kind: Hashable {
-        case live, archive, posts
+        case live, archive, posts, instagram, instagramArchive
     }
 }
 
@@ -25,6 +25,7 @@ final class AppModel: ObservableObject {
             let ids = Set(path.map(\.id))
             EngineRegistry.shared.prune(keeping: ids)
             FeedRegistry.shared.prune(keeping: ids)
+            IGRegistry.shared.prune(keeping: ids)
         }
     }
     @Published private(set) var saved: [SavedProfile]
@@ -42,7 +43,17 @@ final class AppModel: ObservableObject {
     // MARK: Navigation
 
     @discardableResult
-    func open(_ input: String) -> Bool {
+    func open(_ input: String, platform: Platform = .tiktok) -> Bool {
+        // instagram.com links always go to Instagram; anything else follows the chosen site,
+        // except a tiktok.com link, which always goes to TikTok.
+        if IGTarget.isInstagramLink(input) || (platform == .instagram && !input.lowercased().contains("tiktok.com")) {
+            guard let handle = IGTarget.parse(input) else {
+                DebugLog.shared.add(.nav, "Rejected Instagram input: \(input.prefix(80))")
+                return false
+            }
+            openInstagram(handle)
+            return true
+        }
         guard let target = TikTokTarget.parse(input) else {
             DebugLog.shared.add(.nav, "Rejected input: \(input.prefix(80))")
             return false
@@ -53,6 +64,25 @@ final class AppModel: ObservableObject {
     }
 
     func popToRoot() { path.removeAll() }
+
+    func openInstagram(_ handle: String) {
+        DebugLog.shared.add(.nav, "Open Instagram @\(handle)")
+        path.append(Route(query: handle, handle: handle, kind: .instagram))
+    }
+
+    func openInstagramArchive(_ handle: String) {
+        DebugLog.shared.add(.nav, "Open Instagram archive of @\(handle)")
+        path.append(Route(query: handle, handle: handle, kind: .instagramArchive))
+    }
+
+    /// Opens a saved or recent row on the site it came from.
+    func reopen(_ item: SavedProfile) {
+        if item.site == .instagram {
+            openInstagram(item.handle)
+        } else {
+            open("@" + item.handle)
+        }
+    }
 
     func openArchive(_ handle: String) {
         DebugLog.shared.add(.nav, "Open archive of @\(handle)")
@@ -77,6 +107,11 @@ final class AppModel: ObservableObject {
         let fromQuery = components.queryItems?.first(where: { keys.contains($0.name.lowercased()) })?.value
         let parts = components.path.split(separator: "/").map(String.init)
         let host = components.host ?? ""
+        // ninjaview://instagram/<username> or ninjaview://ig?q=<username or link>
+        if ["instagram", "ig"].contains(host.lowercased()), let name = fromQuery ?? parts.last {
+            open(name, platform: .instagram)
+            return
+        }
         var candidate: String?
         if let fromQuery, !fromQuery.isEmpty {
             candidate = fromQuery
@@ -92,8 +127,9 @@ final class AppModel: ObservableObject {
 
     // MARK: Saved and recent profiles (on device only)
 
-    func didLoad(_ profile: ProfileHeader) {
-        let key = profile.key
+    func didLoad(_ profile: ProfileHeader, platform: Platform = .tiktok) {
+        let key = platform.key(profile.handle)
+        let site: Platform? = platform == .instagram ? .instagram : nil
         if let i = saved.firstIndex(where: { $0.id == key }) {
             saved[i].handle = profile.handle
             if !profile.name.isEmpty { saved[i].name = profile.name }
@@ -102,25 +138,28 @@ final class AppModel: ObservableObject {
         let keepHistory = AppSettings.shared.keepHistory
         if keepHistory {
             history.removeAll { $0.id == key }
-            history.insert(SavedProfile(handle: profile.handle, name: profile.name, date: Date()), at: 0)
+            history.insert(SavedProfile(handle: profile.handle, name: profile.name, date: Date(), platform: site), at: 0)
             if history.count > Self.historyLimit { history.removeLast(history.count - Self.historyLimit) }
             persistHistory()
         }
-        if let avatar = profile.avatarURL, keepHistory || isSaved(profile.handle) {
-            AvatarStore.shared.refresh(handle: profile.handle, from: avatar)
+        if let avatar = profile.avatarURL, keepHistory || isSaved(profile.handle, platform: platform) {
+            AvatarStore.shared.refresh(handle: key, from: avatar)
         }
     }
 
-    func isSaved(_ handle: String) -> Bool {
-        saved.contains { $0.id == handle.lowercased() }
+    func isSaved(_ handle: String, platform: Platform = .tiktok) -> Bool {
+        let key = platform.key(handle)
+        return saved.contains { $0.id == key }
     }
 
-    func toggleSaved(_ profile: ProfileHeader) {
-        if isSaved(profile.handle) {
-            saved.removeAll { $0.id == profile.key }
+    func toggleSaved(_ profile: ProfileHeader, platform: Platform = .tiktok) {
+        let key = platform.key(profile.handle)
+        if isSaved(profile.handle, platform: platform) {
+            saved.removeAll { $0.id == key }
         } else {
-            saved.insert(SavedProfile(handle: profile.handle, name: profile.name, date: Date()), at: 0)
-            if let avatar = profile.avatarURL { AvatarStore.shared.refresh(handle: profile.handle, from: avatar, force: true) }
+            let site: Platform? = platform == .instagram ? .instagram : nil
+            saved.insert(SavedProfile(handle: profile.handle, name: profile.name, date: Date(), platform: site), at: 0)
+            if let avatar = profile.avatarURL { AvatarStore.shared.refresh(handle: key, from: avatar, force: true) }
         }
         persistSaved()
     }
