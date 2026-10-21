@@ -215,6 +215,10 @@ struct ArchiveRow: View {
                 .clipShape(Circle())
                 .overlay(Circle().strokeBorder(Color.nvRule, lineWidth: 1))
                 .accessibilityHidden(true)
+                .overlay(alignment: .bottomTrailing) {
+                    WatchBadge(handle: profile.handle)
+                        .offset(x: 3, y: 3)
+                }
             VStack(alignment: .leading, spacing: 2) {
                 Text(title)
                     .font(.body.weight(.medium))

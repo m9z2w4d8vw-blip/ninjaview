@@ -49,7 +49,7 @@ final class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
 
     static func body(for activity: Activity, count: Int) -> String {
         switch activity {
-        case .video: return count == 1 ? "Posted a new video" : "Posted \(count) new videos"
+        case .video: return count == 1 ? "Shared a new post" : "Shared \(count) new posts"
         case .story: return count == 1 ? "Added a new story" : "Added \(count) new stories"
         case .repost: return count == 1 ? "Reposted a video" : "Reposted \(count) videos"
         }

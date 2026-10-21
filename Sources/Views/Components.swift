@@ -165,6 +165,10 @@ struct SavedRow: View {
         HStack(spacing: 12) {
             AvatarView(handle: item.handle)
                 .frame(width: 42, height: 42)
+                .overlay(alignment: .bottomTrailing) {
+                    WatchBadge(handle: item.handle)
+                        .offset(x: 3, y: 3)
+                }
             VStack(alignment: .leading, spacing: 2) {
                 if item.name.isEmpty {
                     Text("@\(item.handle)")

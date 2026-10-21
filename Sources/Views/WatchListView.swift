@@ -1,18 +1,28 @@
 import SwiftUI
 
-/// Manage watched accounts: see when each was last checked, remove one, or check now.
+/// Manage watched accounts: what each one notifies about, when it was last checked,
+/// change or stop it, or check now.
 @MainActor
 struct WatchListView: View {
     @ObservedObject private var watch = WatchCenter.shared
     @EnvironmentObject private var app: AppModel
+    @State private var editing: WatchCenter.Watched? = nil
 
     var body: some View {
         List {
-            if let result = watch.lastResult {
+            if watch.isResting || watch.lastResult != nil {
                 Section {
-                    Text(result)
-                        .font(.footnote)
-                        .foregroundStyle(Color.nvMuted)
+                    if let until = watch.restingUntil, watch.isResting {
+                        Label("tik.ninja asked NinjaView to slow down. Automatic checks resume at \(until.formatted(date: .omitted, time: .shortened)).",
+                              systemImage: "hourglass")
+                            .font(.footnote)
+                            .foregroundStyle(Color.nvInk)
+                    }
+                    if let result = watch.lastResult {
+                        Text(result)
+                            .font(.footnote)
+                            .foregroundStyle(Color.nvMuted)
+                    }
                 }
             }
             Section {
@@ -23,11 +33,15 @@ struct WatchListView: View {
                             Button(role: .destructive) { watch.unwatch(entry.handle) } label: {
                                 Label("Stop watching", systemImage: "bell.slash")
                             }
+                            Button { editing = entry } label: {
+                                Label("Change", systemImage: "slider.horizontal.3")
+                            }
+                            .tint(Color.nvInk)
                         }
                 }
             } footer: {
                 if !watch.watched.isEmpty {
-                    Text("Swipe an account to stop watching it. New videos, stories and reposts show up as notifications.")
+                    Text("Swipe an account to change what it notifies you about, or to stop watching it.")
                 }
             }
         }
@@ -47,8 +61,12 @@ struct WatchListView: View {
         .overlay {
             if watch.watched.isEmpty {
                 ContentUnavailableView("No watched accounts", systemImage: "bell",
-                    description: Text("Turn on the bell on a profile to get notified about new videos, stories and reposts."))
+                    description: Text("Tap the bell on a profile and choose posts, stories or reposts."))
             }
+        }
+        .sheet(item: $editing) { entry in
+            NotifySheet(handle: entry.handle, name: entry.name)
+                .environmentObject(AvatarStore.shared)
         }
     }
 
@@ -56,10 +74,18 @@ struct WatchListView: View {
         HStack(spacing: 12) {
             AvatarView(handle: entry.handle)
                 .frame(width: 42, height: 42)
+                .overlay(alignment: .bottomTrailing) {
+                    WatchBadge(handle: entry.handle)
+                        .offset(x: 3, y: 3)
+                }
             VStack(alignment: .leading, spacing: 2) {
                 Text(entry.name.isEmpty ? "@\(entry.handle)" : entry.name)
                     .font(.body.weight(.medium))
                     .foregroundStyle(Color.nvInk)
+                    .lineLimit(1)
+                Text(Activity.list(entry.activities))
+                    .font(.footnote)
+                    .foregroundStyle(Color.nvSignal)
                     .lineLimit(1)
                 Text(subtitle(entry))
                     .font(.caption)

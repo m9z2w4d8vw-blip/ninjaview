@@ -8,6 +8,8 @@ import AVFoundation
 final class KeepAlive {
     private var player: AVAudioPlayer?
     private var observers: [NSObjectProtocol] = []
+    /// Told whenever the silent track starts or stops, so Settings shows the real state.
+    var onChange: ((Bool) -> Void)?
 
     var isPlaying: Bool { player?.isPlaying ?? false }
 
@@ -26,13 +28,16 @@ final class KeepAlive {
             }
             guard player?.play() == true else {
                 DebugLog.shared.error(.watch, "Instant mode: the silent track wouldn't start")
+                onChange?(false)
                 return false
             }
             installObservers()
             DebugLog.shared.add(.watch, "Instant mode is keeping NinjaView awake")
+            onChange?(true)
             return true
         } catch {
             DebugLog.shared.error(.watch, "Instant mode couldn't start its audio session: \(error.localizedDescription)")
+            onChange?(false)
             return false
         }
     }
@@ -43,6 +48,7 @@ final class KeepAlive {
         removeObservers()
         try? AVAudioSession.sharedInstance().setActive(false, options: [.notifyOthersOnDeactivation])
         DebugLog.shared.add(.watch, "Instant mode stopped")
+        onChange?(false)
     }
 
     private func installObservers() {
@@ -67,11 +73,13 @@ final class KeepAlive {
         switch type {
         case .began:
             DebugLog.shared.add(.watch, "Instant mode: audio was interrupted (a call or Siri)")
+            onChange?(false)
         case .ended:
             try? AVAudioSession.sharedInstance().setActive(true)
             let resumed = player?.play() ?? false
             DebugLog.shared.add(.watch, resumed ? "Instant mode resumed after an interruption" : "Instant mode couldn't resume yet",
                                 level: resumed ? .info : .warning)
+            onChange?(resumed)
         @unknown default:
             break
         }

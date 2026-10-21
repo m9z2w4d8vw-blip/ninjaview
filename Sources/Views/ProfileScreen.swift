@@ -14,6 +14,7 @@ struct ProfileScreen: View {
     @EnvironmentObject private var app: AppModel
     @EnvironmentObject private var downloads: DownloadCenter
     @State private var panel: ProfilePanel? = nil
+    @State private var notifyOpen = false
 
     private let gridTabs: [ProfileTab] = [.videos, .reposts, .stories]
 
@@ -47,6 +48,12 @@ struct ProfileScreen: View {
             }
             .sheet(isPresented: $engine.pageVisible, onDismiss: { engine.pageDismissed() }) {
                 WebPageSheet(webView: engine.bridge.webView) { engine.pageVisible = false }
+            }
+            .sheet(isPresented: $notifyOpen) {
+                if let header = engine.header {
+                    NotifySheet(handle: header.handle, name: header.name)
+                        .environmentObject(AvatarStore.shared)
+                }
             }
             .alert("tik.ninja", isPresented: dialogShown, presenting: engine.dialog) { dialog in
                 if dialog.kind == .confirm {
@@ -161,13 +168,14 @@ struct ProfileScreen: View {
             }
             .buttonStyle(InstaButtonStyle())
             archiveButton(header)
-            Button { toggleWatch(header) } label: {
+            Button { notifyOpen = true } label: {
                 Image(systemName: watch.isWatched(header.handle) ? "bell.fill" : "bell")
                     .foregroundStyle(watch.isWatched(header.handle) ? Color.nvSignal : Color.nvInk)
             }
             .buttonStyle(InstaButtonStyle())
             .frame(width: 40)
-            .accessibilityLabel(watch.isWatched(header.handle) ? "Stop watching" : "Notify me about new posts")
+            .accessibilityLabel("Notifications")
+            .accessibilityValue(watch.isWatched(header.handle) ? "On" : "Off")
             Button { openAnalytics() } label: { Image(systemName: "chart.bar") }
                 .buttonStyle(InstaButtonStyle())
                 .frame(width: 40)
@@ -215,6 +223,7 @@ struct ProfileScreen: View {
     }
 
     @ViewBuilder private func statusLines(_ header: ProfileHeader) -> some View {
+        WatchStatusLine(handle: header.handle) { notifyOpen = true }
         if let crawl = center.find(header.handle, .session) {
             CrawlStatusLine(crawl: crawl, topPadding: 12)
         }
@@ -263,17 +272,6 @@ struct ProfileScreen: View {
         CrawlCenter.shared.prefetch(header.handle)
         await engine.load(.stories)
         await engine.load(.highlights)
-    }
-
-    private func toggleWatch(_ header: ProfileHeader) {
-        Task {
-            if let watching = await watch.toggle(header) {
-                downloads.show(.success, watching ? "You'll be notified about @\(header.handle)'s new posts" : "Stopped watching @\(header.handle)")
-                if watching { UIImpactFeedbackGenerator(style: .light).impactOccurred() }
-            } else {
-                downloads.show(.failure, "Turn on notifications for NinjaView in iOS Settings first.")
-            }
-        }
     }
 
     private func openAnalytics() {

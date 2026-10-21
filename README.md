@@ -32,7 +32,9 @@ If the build fails, open the failed run. The **Summarize compiler errors** step 
 
 ### New-post notifications
 
-Turn on the bell on a profile to watch it. NinjaView notifies you when a watched account **posts a video, adds a story, or reposts** — the three tik.ninja tabs, checked separately. It checks each time you open the app, and in the background. Manage the list, or tap **Check now**, under **Settings > Notifications > Watched accounts**. Allow notifications when asked.
+Tap the **bell** on a profile to choose what that account notifies you about: **Posts**, **Stories** and **Reposts** (the three tik.ninja tabs, each checked separately and only if it's turned on). The bell turns pink, a line under the profile's buttons says which kinds are on, and a small pink bell appears on that account's picture on the home screen. Manage the list, change an account, or tap **Check now** under **Settings > Notifications > Watched accounts**. The first check of each kind is silent, so posts that were already there don't notify. Allow notifications when asked.
+
+**Rate limits.** tik.ninja refuses requests when it gets too many (HTTP 429). When that happens, automatic checks rest for 5 minutes, then 10, 20, 40, up to an hour, and a tab that didn't load cleanly is never compared, so a refused check can't make old posts look new.
 
 **Two background modes (Settings > Notifications > Background checking):**
 

@@ -50,7 +50,14 @@ enum Diagnostics {
         lines.append("Settings: appearance \(settings.appearance.rawValue), history \(onOff(settings.keepHistory)), ad blocking \(onOff(settings.blockAds)), tidy page \(onOff(settings.cleanLayout)), offline copies \(onOff(settings.prefetch)), comments \(onOff(settings.saveComments)), follower lists \(onOff(settings.saveLists))")
         lines.append("Open: \(EngineRegistry.shared.count) profile pages, \(FeedRegistry.shared.count) post lists")
         let watch = WatchCenter.shared
-        lines.append("Watching: \(watch.count) accounts, notifications \(onOff(watch.enabled)), \(watch.mode.rawValue) mode, every \(Int(watch.pollInterval))s, keep-alive \(onOff(watch.keepAliveRunning)), watchdog \(onOff(watch.watchdog)), time-sensitive \(onOff(watch.timeSensitive))")
+        lines.append("Watching: \(watch.count) accounts, notifications \(onOff(watch.enabled)), \(watch.mode.rawValue) mode, every \(Int(watch.pollInterval))s, keeping awake: \(watch.keepAwakeStatus.lowercased()), watchdog \(onOff(watch.watchdog)), time-sensitive \(onOff(watch.timeSensitive))")
+        for entry in watch.watched {
+            let checked = entry.lastChecked?.formatted(date: .abbreviated, time: .shortened) ?? "never"
+            lines.append("  @\(entry.handle): \(Activity.list(entry.activities).lowercased()); first look done for \(Activity.list(entry.baselined).lowercased()); last checked \(checked)")
+        }
+        if let until = watch.restingUntil, until > Date() {
+            lines.append("  Automatic checks paused until \(until.formatted(date: .omitted, time: .shortened)) (tik.ninja rate limit)")
+        }
         let crawls = CrawlCenter.shared.crawls.values
             .sorted { $0.id < $1.id }
             .map { "\($0.mode.rawValue) @\($0.handle) \(describe($0.state)) \($0.postsDone)/\($0.postsTotal)" }
