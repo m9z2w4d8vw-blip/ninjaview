@@ -59,6 +59,9 @@ final class PageBridge: NSObject {
     weak var delegate: PageBridgeDelegate?
     private(set) var isReady = false
     private(set) var isTornDown = false
+    /// Set to true for the signed-in Instagram session page so top-level navigations to
+    /// instagram.com are allowed. Must be set before the first runloop yield after init().
+    var allowsInstagram = false
     private var navigationStart: Date?
 
     init(_ prepared: PreparedWebView) {
@@ -81,15 +84,16 @@ final class PageBridge: NSObject {
 
     /// Runs an async function body in the page and logs what it did and how long it took.
     /// Engine calls always return a JSON string.
-    func call(_ body: String, _ arguments: [String: Any] = [:], timeout: TimeInterval = 45) async throws -> String {
+    /// `redacting` is a set of argument keys whose values are replaced with *** in the debug log.
+    func call(_ body: String, _ arguments: [String: Any] = [:], timeout: TimeInterval = 45, redacting: Set<String> = []) async throws -> String {
         let name = Self.callName(body)
         let started = Date()
         do {
             let json = try await rawCall(body, arguments, timeout: timeout)
-            DebugLog.shared.add(.web, "\(name)(\(Self.describe(arguments))) took \(Self.ms(since: started)) ms, \(json.utf8.count) bytes back")
+            DebugLog.shared.add(.web, "\(name)(\(Self.describe(arguments, redacting: redacting))) took \(Self.ms(since: started)) ms, \(json.utf8.count) bytes back")
             return json
         } catch {
-            DebugLog.shared.error(.web, "\(name)(\(Self.describe(arguments))) failed after \(Self.ms(since: started)) ms: \(error.localizedDescription)")
+            DebugLog.shared.error(.web, "\(name)(\(Self.describe(arguments, redacting: redacting))) failed after \(Self.ms(since: started)) ms: \(error.localizedDescription)")
             throw error
         }
     }
@@ -99,8 +103,9 @@ final class PageBridge: NSObject {
         return String(body[range].dropFirst(5))
     }
 
-    nonisolated static func describe(_ arguments: [String: Any]) -> String {
+    nonisolated static func describe(_ arguments: [String: Any], redacting: Set<String> = []) -> String {
         arguments.keys.sorted().map { key in
+            if redacting.contains(key) { return "\(key)=***" }
             let value = String(describing: arguments[key] ?? "")
             return "\(key)=\(value.count > 80 ? String(value.prefix(80)) + "\u{2026}" : value)"
         }.joined(separator: ", ")
@@ -235,6 +240,7 @@ extension PageBridge: WKNavigationDelegate {
             return .cancel
         }
         if LinkRules.isTikNinja(url) || IGLinks.isViewer(url) { return .allow }
+        if allowsInstagram && LinkRules.isInstagram(url) { return .allow }
         if LinkRules.isTikTok(url) {
             AppModel.shared.open(url.absoluteString)
             return .cancel

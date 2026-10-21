@@ -16,7 +16,10 @@ struct IGSettingsSection: View {
             if let username = creds.username {
                 LabeledContent("Signed in as", value: "@\(username)")
                 Button("Open Instagram (finish a check or verify)") { pageOpen = true }
-                Button("Sign out of Instagram", role: .destructive) { creds.signOut() }
+                Button("Sign out of Instagram", role: .destructive) {
+                    creds.signOut()
+                    Task { await WebFactory.shared.clearInstagramData() }
+                }
             } else {
                 Button("Sign in to Instagram") { signInOpen = true }
             }

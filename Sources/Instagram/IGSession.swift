@@ -30,6 +30,8 @@ final class IGSession: ObservableObject, PageBridgeDelegate {
 
     init() {
         bridge = PageBridge(WebFactory.shared.makeInstagramSessionPage(IGLinks.instagramHome))
+        // Must be set before the main runloop yields so the first navigation decision sees it.
+        bridge.allowsInstagram = true
         bridge.delegate = self
     }
 
@@ -83,7 +85,9 @@ final class IGSession: ObservableObject, PageBridgeDelegate {
         DebugLog.shared.add(.web, "Signing in to Instagram as @\(username)")
         do {
             let json = try await bridge.call("return JSON.stringify(await window.__igl.login(u, p, t));",
-                                             ["u": username, "p": password, "t": Int(timeout * 1000)], timeout: timeout + 10)
+                                             ["u": username, "p": password, "t": Int(timeout * 1000)],
+                                             timeout: timeout + 10,
+                                             redacting: ["p"])
             let state = try bridge.decode(IGLoginState.self, json)
             if state.loggedIn { phase = .signedIn; DebugLog.shared.add(.web, "Signed in to Instagram"); return true }
             if state.challenge {
@@ -234,4 +238,14 @@ extension WebFactory {
         let store = WKWebsiteDataStore.default()
         return store
     }()
+
+    /// Erases all instagram.com cookies and storage from the app-private persistent store.
+    /// Call this on sign-out so a later sign-in as a different account starts clean.
+    func clearInstagramData() async {
+        await Self.instagramSessionStore.removeData(
+            ofTypes: WKWebsiteDataStore.allWebsiteDataTypes(),
+            modifiedSince: .distantPast
+        )
+        DebugLog.shared.add(.web, "Cleared Instagram session data")
+    }
 }

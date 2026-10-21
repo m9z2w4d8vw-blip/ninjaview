@@ -11,6 +11,11 @@ enum LinkRules {
         return host == "tiktok.com" || host.hasSuffix(".tiktok.com")
     }
 
+    static func isInstagram(_ url: URL) -> Bool {
+        guard let host = url.host?.lowercased() else { return false }
+        return host == "instagram.com" || host.hasSuffix(".instagram.com")
+    }
+
     private static let mediaHosts = ["tiktokcdn", "ibyteimg", "byteoversea", "muscdn", "tiktokv.", "ttwstatic"]
     private static let mediaExtensions: Set<String> = ["mp4", "mov", "m4v", "mp3", "m4a", "aac", "wav", "jpg", "jpeg", "png", "webp", "heic", "gif"]
 
