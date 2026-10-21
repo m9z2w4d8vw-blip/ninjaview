@@ -2,9 +2,22 @@ import AVFoundation
 import SwiftUI
 import UIKit
 
+/// Registers the notification delegate and both background tasks at launch (background-task
+/// registration has to happen before launch finishes), then hands off to WatchCenter.
+final class NinjaViewAppDelegate: NSObject, UIApplicationDelegate {
+    func application(_ application: UIApplication,
+                     didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil) -> Bool {
+        NotificationManager.shared.configure()
+        BackgroundScheduler.register()
+        WatchCenter.shared.didFinishLaunching()
+        return true
+    }
+}
+
 @main
 @MainActor
 struct NinjaViewApp: App {
+    @UIApplicationDelegateAdaptor(NinjaViewAppDelegate.self) private var appDelegate
     @StateObject private var app = AppModel.shared
     @StateObject private var settings = AppSettings.shared
     @StateObject private var downloads = DownloadCenter.shared
@@ -36,9 +49,7 @@ struct NinjaViewApp: App {
                 DebugLog.shared.add(.app, "Thermal state is now \(Diagnostics.thermal(ProcessInfo.processInfo.thermalState))")
             }
         }
-        NotificationManager.shared.configure()
         WebFactory.shared.warmUp()
-        WatchCenter.shared.schedule()
     }
 
     var body: some Scene {
@@ -51,10 +62,6 @@ struct NinjaViewApp: App {
                 .environmentObject(avatars)
                 .tint(Color.nvInk)
                 .onOpenURL { app.handleDeepLink($0) }
-        }
-        // iOS runs this when it next decides to wake the app (not on a fixed clock).
-        .backgroundTask(.appRefresh(WatchTask.refreshID)) {
-            await WatchCenter.shared.runBackgroundCheck()
         }
     }
 }

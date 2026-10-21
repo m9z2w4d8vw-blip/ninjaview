@@ -1,20 +1,45 @@
 import BackgroundTasks
 import Combine
 import Foundation
+import SwiftUI
 
-/// Task identifier, kept outside the main-actor class so the App scene and the
-/// scheduler can both name it.
+/// Background task identifiers, kept outside the main-actor class so the scheduler can name them.
 enum WatchTask {
     static let refreshID = "com.parv.ninjaview.check"
+    static let processingID = "com.parv.ninjaview.process"
 }
 
-/// Watches chosen accounts for new posts. iOS wakes the app for a background check
-/// when it decides to (a few times a day, not on a fixed clock, and never while the
-/// app is force-quit); the app also checks each time you open it. New posts raise a
-/// local notification. Nothing here needs a TikTok login.
+/// How NinjaView watches in the background.
+enum WatchMode: String, CaseIterable, Identifiable, Codable {
+    /// Keeps itself awake with a silent audio session and checks on a short loop.
+    case instant
+    /// Only checks when open or when iOS wakes it (Background App Refresh).
+    case standard
+
+    var id: String { rawValue }
+    var title: String { self == .instant ? "Instant" : "Standard" }
+}
+
+/// The kinds of activity a notification can be about. Each maps to a tik.ninja tab.
+enum Activity: String, CaseIterable {
+    case video, story, repost
+
+    var tab: ProfileTab {
+        switch self {
+        case .video: return .videos
+        case .story: return .stories
+        case .repost: return .reposts
+        }
+    }
+}
+
+/// Watches chosen accounts for new posts, stories and reposts, and notifies when they appear.
 ///
-/// A check is cheap: it opens a hidden tik.ninja page for the account, reads the post
-/// count (and, when there's time, the newest post), and compares with what it saw last.
+/// Instant mode keeps the app running with a silent audio session (works through TrollStore,
+/// no jailbreak) and checks every poll interval. Standard mode checks when the app is open and
+/// when iOS wakes it. Both check the moment you open the app, and there's a Check now button.
+///
+/// Detection is by the newest items' stable keys per tab, compared with what was seen last.
 @MainActor
 final class WatchCenter: ObservableObject {
     static let shared = WatchCenter()
@@ -22,32 +47,101 @@ final class WatchCenter: ObservableObject {
     struct Watched: Codable, Identifiable {
         var handle: String
         var name: String
-        /// The signature last seen: how many posts, and the newest post's stable key.
-        var postCount: Int?
-        var newestKey: String?
+        var seenVideoKeys: [String] = []
+        var seenStoryKeys: [String] = []
+        var seenRepostKeys: [String] = []
+        /// First check done, so later checks may notify (the baseline check is silent).
+        var baselined = false
         var lastChecked: Date?
         var addedAt: Date
         var id: String { handle.lowercased() }
+
+        func seen(_ activity: Activity) -> [String] {
+            switch activity {
+            case .video: return seenVideoKeys
+            case .story: return seenStoryKeys
+            case .repost: return seenRepostKeys
+            }
+        }
+
+        mutating func setSeen(_ activity: Activity, _ keys: [String]) {
+            switch activity {
+            case .video: seenVideoKeys = keys
+            case .story: seenStoryKeys = keys
+            case .repost: seenRepostKeys = keys
+            }
+        }
     }
 
     @Published private(set) var watched: [Watched]
     @Published private(set) var enabled: Bool
     @Published private(set) var isChecking = false
+    @Published private(set) var keepAliveRunning = false
     @Published private(set) var lastResult: String? = nil
+    @Published private(set) var lastCheckAt: Date? = nil
+
+    @Published var mode: WatchMode { didSet { persistMode(); applyMonitoring() } }
+    @Published var pollInterval: Double { didSet { UserDefaults.standard.set(pollInterval, forKey: intervalKey) } }
+    @Published var watchdog: Bool { didSet { UserDefaults.standard.set(watchdog, forKey: watchdogKey); applyMonitoring() } }
+    @Published var timeSensitive: Bool { didSet { UserDefaults.standard.set(timeSensitive, forKey: timeSensitiveKey) } }
+
+    static let intervals: [Double] = [120, 180, 300, 600, 900]
+
+    private let keepAlive = KeepAlive()
+    private var loopTask: Task<Void, Never>? = nil
+    private var isActive = false
+    private let seenCap = 60
 
     private let watchedKey = "watchedAccounts"
     private let enabledKey = "watchEnabled"
+    private let modeKey = "watchMode"
+    private let intervalKey = "watchPollInterval"
+    private let watchdogKey = "watchWatchdog"
+    private let timeSensitiveKey = "watchTimeSensitive"
     private let foregroundKey = "watchLastForeground"
     private var isRunning = false
 
     private init() {
+        let defaults = UserDefaults.standard
+        defaults.register(defaults: [modeKey: WatchMode.instant.rawValue, intervalKey: 180.0,
+                                     watchdogKey: true, timeSensitiveKey: true])
         watched = Store.load([Watched].self, key: watchedKey) ?? []
-        enabled = UserDefaults.standard.bool(forKey: enabledKey)
+        enabled = defaults.bool(forKey: enabledKey)
+        mode = WatchMode(rawValue: defaults.string(forKey: modeKey) ?? "") ?? .instant
+        pollInterval = defaults.double(forKey: intervalKey)
+        watchdog = defaults.bool(forKey: watchdogKey)
+        timeSensitive = defaults.bool(forKey: timeSensitiveKey)
     }
 
     var count: Int { watched.count }
 
     func isWatched(_ handle: String) -> Bool { watched.contains { $0.id == handle.lowercased() } }
+
+    // MARK: App lifecycle
+
+    func didFinishLaunching() {
+        BackgroundScheduler.scheduleAll()
+        applyMonitoring()
+    }
+
+    func scenePhaseChanged(_ phase: ScenePhase) {
+        switch phase {
+        case .active:
+            let loopWasRunning = loopTask != nil
+            isActive = true
+            applyMonitoring()
+            // Opening the app gives a fresh check even if the loop was already running.
+            if loopWasRunning, Date().timeIntervalSince(lastCheckAt ?? .distantPast) > 10 {
+                Task { await runChecks(handles: oldestFirst(limit: 8), trigger: .foreground, budget: 120) }
+            }
+        case .background:
+            isActive = false
+            BackgroundScheduler.scheduleAll()
+            applyMonitoring()
+        default:
+            break
+        }
+    }
 
     // MARK: Membership
 
@@ -59,15 +153,12 @@ final class WatchCenter: ObservableObject {
         }
         guard await NotificationManager.shared.requestAuthorization() else { return nil }
         if !enabled { enabled = true; persistEnabled() }
-        var entry = Watched(handle: header.handle, name: header.name, postCount: postCount(from: header),
-                            newestKey: nil, lastChecked: nil, addedAt: Date())
-        _ = entry // seeded below after append so persistence sees the baseline
-        watched.append(entry)
+        watched.append(Watched(handle: header.handle, name: header.name, addedAt: Date()))
         persistWatched()
         DebugLog.shared.add(.watch, "Watching @\(header.handle) (\(watched.count) total)")
-        schedule()
-        // Record a baseline now so the first scheduled check doesn't call every post "new".
-        Task { _ = await checkOne(header.handle, deep: true) }
+        applyMonitoring()
+        // A silent baseline check so the first real check doesn't report everything as new.
+        Task { _ = await checkOne(header.handle, deadline: Date().addingTimeInterval(60)) }
         return true
     }
 
@@ -75,47 +166,91 @@ final class WatchCenter: ObservableObject {
         watched.removeAll { $0.id == handle.lowercased() }
         persistWatched()
         DebugLog.shared.add(.watch, "Stopped watching @\(handle)")
-        if watched.isEmpty { cancelSchedule() }
+        applyMonitoring()
     }
 
     func setEnabled(_ on: Bool) async {
         if on {
             guard await NotificationManager.shared.requestAuthorization() else { return }
             enabled = true
-            persistEnabled()
-            schedule()
         } else {
             enabled = false
-            persistEnabled()
-            cancelSchedule()
         }
+        persistEnabled()
+        applyMonitoring()
+    }
+
+    // MARK: Monitoring
+
+    private var wantsKeepAlive: Bool { enabled && mode == .instant && !watched.isEmpty }
+
+    /// How long Instant mode can go quiet before the "stopped watching" alert fires.
+    private var watchdogDelay: TimeInterval { max(600, pollInterval * 4 + 120) }
+
+    func applyMonitoring() {
+        if wantsKeepAlive {
+            keepAliveRunning = keepAlive.isPlaying ? true : keepAlive.start()
+            if watchdog {
+                NotificationManager.shared.scheduleWatchdog(after: watchdogDelay)
+            } else {
+                NotificationManager.shared.cancelWatchdog()
+            }
+        } else {
+            if keepAlive.isPlaying || keepAliveRunning { keepAlive.stop() }
+            keepAliveRunning = false
+            NotificationManager.shared.cancelWatchdog()
+        }
+        if (wantsKeepAlive || isActive) && enabled && !watched.isEmpty {
+            startLoop()
+        } else {
+            stopLoop()
+        }
+    }
+
+    private func startLoop() {
+        guard loopTask == nil else { return }
+        loopTask = Task { [weak self] in
+            while !Task.isCancelled {
+                guard let self else { return }
+                if self.wantsKeepAlive && !self.keepAlive.isPlaying {
+                    self.keepAliveRunning = self.keepAlive.start()
+                }
+                if self.enabled && !self.watched.isEmpty {
+                    await self.runChecks(handles: self.watched.map(\.handle),
+                                         trigger: self.isActive ? .foreground : .instant,
+                                         budget: 600)
+                }
+                let seconds = max(60, self.pollInterval)
+                try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
+            }
+        }
+    }
+
+    private func stopLoop() {
+        loopTask?.cancel()
+        loopTask = nil
     }
 
     // MARK: Checking
 
     /// Every watched account, now, with a toast summary (the "Check now" button).
     func checkNow() async {
-        await runChecks(handles: watched.map(\.handle), deep: true, reason: "manual", budget: 180)
+        await runChecks(handles: watched.map(\.handle), trigger: .manual, budget: 240)
     }
 
-    /// On returning to the app: check the accounts checked longest ago, at most every 10 minutes.
-    func runForegroundCheck() {
-        guard enabled, !watched.isEmpty else { return }
-        let last = UserDefaults.standard.double(forKey: foregroundKey)
-        let now = Date().timeIntervalSince1970
-        guard now - last > 600 else { return }
-        UserDefaults.standard.set(now, forKey: foregroundKey)
-        Task { await runChecks(handles: oldestFirst(limit: 8), deep: true, reason: "foreground", budget: 90) }
-    }
-
-    /// Called by the background task. Short, cancellation-aware, and it always reschedules.
-    func runBackgroundCheck() async {
-        DebugLog.shared.add(.watch, "Background check woke up")
+    /// Called by the background tasks. Short, cancellation-aware, and always reschedules.
+    func runBackgroundCheck(trigger: CheckTrigger) async -> Bool {
+        DebugLog.shared.add(.watch, "\(trigger.rawValue) woke up")
         if enabled, !watched.isEmpty {
-            await runChecks(handles: oldestFirst(limit: 6), deep: false, reason: "background", budget: 25)
+            let processing = trigger == .backgroundProcessing
+            await runChecks(handles: oldestFirst(limit: processing ? 20 : 6),
+                            trigger: trigger,
+                            budget: processing ? 170 : 25)
         }
-        schedule()
-        DebugLog.shared.add(.watch, "Background check finished")
+        if wantsKeepAlive && watchdog {
+            NotificationManager.shared.scheduleWatchdog(after: watchdogDelay)
+        }
+        return true
     }
 
     private func oldestFirst(limit: Int) -> [String] {
@@ -124,76 +259,80 @@ final class WatchCenter: ObservableObject {
             .map(\.handle)
     }
 
-    private func runChecks(handles: [String], deep: Bool, reason: String, budget: Double) async {
+    private func runChecks(handles: [String], trigger: CheckTrigger, budget: Double) async {
         guard !isRunning else { return }
         isRunning = true
         isChecking = true
         defer { isRunning = false; isChecking = false }
-        let deadline = Date().addingTimeInterval(budget)
+        let overall = Date().addingTimeInterval(budget)
         var checked = 0, found = 0, failed = 0
         for handle in handles {
-            if Task.isCancelled || Date() > deadline { break }
-            if let new = await checkOne(handle, deep: deep) {
+            if Task.isCancelled || Date() > overall { break }
+            // Leave room so the last account doesn't overrun a short background budget.
+            let perAccount = min(overall, Date().addingTimeInterval(45))
+            let result = await checkOne(handle, deadline: perAccount)
+            if result.ok {
                 checked += 1
-                if new > 0 {
-                    found += new
-                    if let entry = watched.first(where: { $0.id == handle.lowercased() }) {
-                        NotificationManager.shared.notifyNewPosts(handle: entry.handle, name: entry.name, count: new)
-                    }
-                }
+                found += result.new
             } else {
                 failed += 1
             }
         }
+        lastCheckAt = Date()
         lastResult = "Checked \(checked), \(found) new" + (failed > 0 ? ", \(failed) couldn't be reached" : "")
-        DebugLog.shared.add(.watch, "\(reason.capitalized) check: \(lastResult ?? "")")
+        DebugLog.shared.add(.watch, "\(trigger.rawValue) check: \(lastResult ?? "")", level: failed > 0 ? .warning : .info)
+        if wantsKeepAlive && watchdog { NotificationManager.shared.scheduleWatchdog(after: watchdogDelay) }
     }
 
-    /// One account. Updates its stored signature and returns how many new posts, or nil
-    /// if tik.ninja couldn't be reached.
-    private func checkOne(_ handle: String, deep: Bool) async -> Int? {
-        guard let index = watched.firstIndex(where: { $0.id == handle.lowercased() }) else { return nil }
+    /// One account: reads its videos, stories and reposts tabs, notifies for anything new,
+    /// and updates its seen keys. Returns how many new items, and whether it could be checked.
+    private func checkOne(_ handle: String, deadline: Date) async -> (new: Int, ok: Bool) {
+        guard watched.firstIndex(where: { $0.id == handle.lowercased() }) != nil else { return (0, false) }
         let started = Date()
         let engine = ProfileEngine(route: Route(query: handle, handle: handle), headless: true)
         engine.start()
-        guard await waitUntilReady(engine, seconds: deep ? 15 : 10), let header = engine.header else {
+        guard await waitUntilReady(engine, until: deadline), let header = engine.header else {
             engine.teardown()
             DebugLog.shared.warn(.watch, "Couldn't reach @\(handle) in \(Self.ms(started)) ms")
-            return nil
+            return (0, false)
         }
-        let count = postCount(from: header)
-        var newestKey = watched[index].newestKey
-        if deep {
-            await engine.load(.videos)
-            if let first = engine.tabs[.videos]?.items.first {
-                newestKey = StableKey.of(first, tab: .videos)
-            }
+
+        var current: [Activity: [String]] = [:]
+        for activity in Activity.allCases {
+            if Task.isCancelled || Date() > deadline { break }
+            await engine.load(activity.tab)
+            let items = engine.tabs[activity.tab]?.items ?? []
+            current[activity] = items.prefix(24).map { StableKey.of($0, tab: activity.tab) }
         }
         engine.teardown()
 
-        let previousCount = watched[index].postCount
-        let previousKey = watched[index].newestKey
-        var new = 0
-        if let previousCount, let count, count > previousCount {
-            new = count - previousCount
-        } else if deep, let previousKey, let newestKey, newestKey != previousKey,
-                  previousCount == nil || count == nil || count == previousCount {
-            new = 1
+        guard let index = watched.firstIndex(where: { $0.id == handle.lowercased() }) else { return (0, false) }
+        var entry = watched[index]
+        let firstTime = !entry.baselined
+        var totalNew = 0
+        for (activity, keys) in current {
+            let seen = Set(entry.seen(activity))
+            let fresh = keys.filter { !seen.contains($0) }
+            if !firstTime && !fresh.isEmpty {
+                totalNew += fresh.count
+                NotificationManager.shared.notify(handle: entry.handle, name: entry.name,
+                                                  activity: activity, count: fresh.count, timeSensitive: timeSensitive)
+            }
+            // Keep newest keys first, capped, so items don't re-notify and the list stays small.
+            var merged = keys
+            for key in entry.seen(activity) where !merged.contains(key) { merged.append(key) }
+            entry.setSeen(activity, Array(merged.prefix(seenCap)))
         }
-
-        // The list may have changed while the page loaded; find the row again before saving.
-        guard let saveIndex = watched.firstIndex(where: { $0.id == handle.lowercased() }) else { return new }
-        if let count { watched[saveIndex].postCount = count }
-        if let newestKey { watched[saveIndex].newestKey = newestKey }
-        if !header.name.isEmpty { watched[saveIndex].name = header.name }
-        watched[saveIndex].lastChecked = Date()
+        entry.baselined = true
+        entry.lastChecked = Date()
+        if !header.name.isEmpty { entry.name = header.name }
+        watched[index] = entry
         persistWatched()
-        DebugLog.shared.add(.watch, "Checked @\(handle): \(count.map(String.init) ?? "?") posts, \(new) new, \(Self.ms(started)) ms")
-        return new
+        DebugLog.shared.add(.watch, "Checked @\(handle): \(totalNew) new\(firstTime ? " (baseline)" : ""), \(Self.ms(started)) ms")
+        return (totalNew, true)
     }
 
-    private func waitUntilReady(_ engine: ProfileEngine, seconds: Double) async -> Bool {
-        let deadline = Date().addingTimeInterval(seconds)
+    private func waitUntilReady(_ engine: ProfileEngine, until deadline: Date) async -> Bool {
         while Date() < deadline {
             if Task.isCancelled { return false }
             switch engine.phase {
@@ -206,38 +345,11 @@ final class WatchCenter: ObservableObject {
         return false
     }
 
-    private func postCount(from header: ProfileHeader) -> Int? {
-        for stat in header.stats {
-            let label = stat.label.lowercased()
-            if label == "videos" || label == "posts" { return CompactNumber.parse(stat.value) }
-        }
-        return nil
-    }
-
     private static func ms(_ start: Date) -> Int { Int(Date().timeIntervalSince(start) * 1000) }
-
-    // MARK: Scheduling
-
-    func schedule() {
-        guard enabled, !watched.isEmpty else { return }
-        let request = BGAppRefreshTaskRequest(identifier: WatchTask.refreshID)
-        // iOS treats this as the earliest it may run, then picks the moment itself.
-        request.earliestBeginDate = Date().addingTimeInterval(3600)
-        do {
-            try BGTaskScheduler.shared.submit(request)
-            DebugLog.shared.add(.watch, "Asked iOS for the next background check in about an hour")
-        } catch {
-            DebugLog.shared.warn(.watch, "Couldn't schedule a background check: \(error.localizedDescription). Background App Refresh may be off for NinjaView.")
-        }
-    }
-
-    private func cancelSchedule() {
-        BGTaskScheduler.shared.cancel(taskRequestWithIdentifier: WatchTask.refreshID)
-        DebugLog.shared.add(.watch, "Cancelled scheduled background checks")
-    }
 
     // MARK: Persistence
 
     private func persistWatched() { Store.save(watched, key: watchedKey) }
     private func persistEnabled() { UserDefaults.standard.set(enabled, forKey: enabledKey) }
+    private func persistMode() { UserDefaults.standard.set(mode.rawValue, forKey: modeKey) }
 }

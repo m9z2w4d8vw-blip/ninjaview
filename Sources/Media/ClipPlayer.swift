@@ -23,9 +23,15 @@ final class ClipPlayer: ObservableObject {
     private var stallObserver: NSObjectProtocol?
     private var timeObserver: Any?
 
+    private var backgroundObserver: NSObjectProtocol?
+
     init() {
         player.actionAtItemEnd = .none
         player.isMuted = true
+        backgroundObserver = NotificationCenter.default.addObserver(forName: UIApplication.didEnterBackgroundNotification,
+                                                                    object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.pause() }
+        }
         timeObserver = player.addPeriodicTimeObserver(forInterval: CMTime(seconds: 0.25, preferredTimescale: 600), queue: .main) { [weak self] time in
             MainActor.assumeIsolated {
                 guard let self, let item = self.player.currentItem else { return }

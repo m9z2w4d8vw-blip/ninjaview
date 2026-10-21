@@ -31,11 +31,7 @@ struct RootView: View {
         .onChange(of: scenePhase) { _, phase in
             DebugLog.shared.add(.app, "App is \(String(describing: phase))")
             CrawlCenter.shared.scenePhaseChanged(phase)
-            switch phase {
-            case .active: WatchCenter.shared.runForegroundCheck()
-            case .background: WatchCenter.shared.schedule()
-            default: break
-            }
+            WatchCenter.shared.scenePhaseChanged(phase)
         }
     }
 }

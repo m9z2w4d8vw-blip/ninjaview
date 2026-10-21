@@ -32,11 +32,18 @@ If the build fails, open the failed run. The **Summarize compiler errors** step 
 
 ### New-post notifications
 
-Turn on the bell on a profile to watch it. NinjaView checks your watched accounts and notifies you when they post. It checks each time you open the app, and in the background when iOS wakes it — which iOS schedules itself, usually a few times a day rather than on a fixed hour, and never while the app is force-quit. Keep **Background App Refresh** on for NinjaView in iOS Settings, and allow notifications when asked. Manage the list, or tap **Check now**, under **Settings > Notifications > Watched accounts**. A background check reads each account's post count (and newest post when there's time) and only notifies on something new.
+Turn on the bell on a profile to watch it. NinjaView notifies you when a watched account **posts a video, adds a story, or reposts** — the three tik.ninja tabs, checked separately. It checks each time you open the app, and in the background. Manage the list, or tap **Check now**, under **Settings > Notifications > Watched accounts**. Allow notifications when asked.
 
-A phone can't run an app on a strict hourly timer without a jailbreak, so if you need exact hourly checks, a small script on an always-on computer is the reliable route — ask and I can put one together.
+**Two background modes (Settings > Notifications > Background checking):**
 
-### Offline copy for the session
+- **Instant** (default) keeps NinjaView running with a silent, mixable audio session — the same idea as "keep my app alive" jailbreak tweaks, but built into the app, so it works through TrollStore with no jailbreak. It checks every poll interval (default 3 minutes), so alerts land within about one interval. It uses some battery, and **swiping NinjaView away in the app switcher stops it**; the "stopped watching" warning tells you if that happens. Background App Refresh runs as a backup.
+- **Standard** checks only when the app is open and when iOS wakes it (Background App Refresh) — iOS's own schedule, usually every 15 minutes to a few hours, more often the more you use the app, never while force-quit. Lighter on battery.
+
+The TrollStore build is fakesigned (with `ldid`, in the workflow) carrying the Time Sensitive notification entitlement, so alerts can get through Focus modes and the scheduled summary. Keep **Background App Refresh** on for NinjaView in iOS Settings for the background checks.
+
+**One honest caveat.** NinjaView detects new activity by driving a hidden tik.ninja page, and iOS throttles web content in the background. Instant mode keeps the whole app awake, which gives the background checks their best chance, but whether that hidden page runs reliably in the background is the open question. The checks when the app is open always work. **Settings > Diagnostics > Export debug log (.txt)** records every check (filter the in-app log by the `watch` area) and whether it completed, so after a day you can see whether background checks are landing. If they aren't, a small script on an always-on computer is the reliable route — ask and I can build one.
+
+### Offline copy for the session### Offline copy for the session
 
 Opening a profile starts a background download of everything on it: posts, reposts, stories and highlights (video files, photos and covers), comments with their reply threads, follower and following lists, and analytics. A line under the profile's buttons shows progress. Posts that have finished play from the phone. The copy is erased when NinjaView closes. It runs on its own hidden page, one profile at a time, newest first. Turn it off, or leave out comments or lists, in **Settings > Offline**.
 

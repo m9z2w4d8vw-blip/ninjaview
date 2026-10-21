@@ -11,6 +11,10 @@ struct SettingsView: View {
     @ObservedObject private var archives = ProfileStore.archive
     @ObservedObject private var watch = WatchCenter.shared
 
+    private func intervalLabel(_ seconds: Double) -> String {
+        seconds < 60 ? "\(Int(seconds))s" : "\(Int(seconds / 60)) min"
+    }
+
     var body: some View {
         NavigationStack {
             Form {
@@ -79,7 +83,34 @@ struct SettingsView: View {
                 } header: {
                     Text("Notifications")
                 } footer: {
-                    Text("Turn on the bell on a profile to watch it. NinjaView checks your watched accounts when iOS wakes it in the background \u{2014} usually a few times a day, not on a fixed schedule, and not while the app is force-quit \u{2014} and each time you open it, and notifies you about new posts. For the background checks, keep Background App Refresh on for NinjaView in iOS Settings.")
+                    Text("Turn on the bell on a profile to watch it. NinjaView notifies you when a watched account posts a video, adds a story, or reposts. It checks each time you open the app, and in the background depending on the mode below.")
+                }
+
+                if watch.enabled {
+                    Section {
+                        Picker("Mode", selection: $watch.mode) {
+                            ForEach(WatchMode.allCases) { mode in Text(mode.title).tag(mode) }
+                        }
+                        .pickerStyle(.segmented)
+                        if watch.mode == .instant {
+                            Picker("Check every", selection: $watch.pollInterval) {
+                                ForEach(WatchCenter.intervals, id: \.self) { seconds in
+                                    Text(intervalLabel(seconds)).tag(seconds)
+                                }
+                            }
+                            Toggle("Warn me if watching stops", isOn: $watch.watchdog)
+                        }
+                        Toggle("Time Sensitive alerts", isOn: $watch.timeSensitive)
+                        if watch.mode == .instant {
+                            LabeledContent("Keeping awake", value: watch.keepAliveRunning ? "Yes" : "Not running")
+                        }
+                    } header: {
+                        Text("Background checking")
+                    } footer: {
+                        Text(watch.mode == .instant
+                             ? "Instant keeps NinjaView awake with a silent audio session (it never interrupts your music) and checks on the schedule above, so alerts land within about one interval. It uses some battery, and swiping NinjaView away in the app switcher stops it \u{2014} the warning above tells you if that happens. Background App Refresh is still used as a backup."
+                             : "Standard checks only when NinjaView is open and when iOS wakes it in the background \u{2014} usually every 15 minutes to a few hours, more often the more you use the app, and never while it's force-quit. Lighter on battery. Keep Background App Refresh on for NinjaView in iOS Settings.")
+                    }
                 }
 
                 Section {
