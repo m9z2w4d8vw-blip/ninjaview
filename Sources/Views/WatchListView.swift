@@ -27,7 +27,7 @@ struct WatchListView: View {
                 }
             } footer: {
                 if !watch.watched.isEmpty {
-                    Text("Swipe an account to stop watching it. New posts show up as notifications.")
+                    Text("Swipe an account to stop watching it. New videos, stories and reposts show up as notifications.")
                 }
             }
         }
@@ -47,7 +47,7 @@ struct WatchListView: View {
         .overlay {
             if watch.watched.isEmpty {
                 ContentUnavailableView("No watched accounts", systemImage: "bell",
-                    description: Text("Turn on the bell on a profile to get notified about new posts."))
+                    description: Text("Turn on the bell on a profile to get notified about new videos, stories and reposts."))
             }
         }
     }
@@ -73,7 +73,6 @@ struct WatchListView: View {
 
     private func subtitle(_ entry: WatchCenter.Watched) -> String {
         var parts = ["@\(entry.handle)"]
-        if let count = entry.postCount { parts.append("\(count) posts") }
         if let last = entry.lastChecked {
             parts.append("checked \(last.formatted(.relative(presentation: .named)))")
         } else {

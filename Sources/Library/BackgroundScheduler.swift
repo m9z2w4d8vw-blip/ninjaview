@@ -12,16 +12,28 @@ enum CheckTrigger: String {
 
 /// Background App Refresh and a longer processing task, kept scheduled as a backup to
 /// Instant mode. iOS decides when (and whether) these actually run.
+///
+/// This type isn't on the main actor (iOS calls the launch handlers on the queue given at
+/// registration), so its log lines hop over to the main actor, where DebugLog lives.
 enum BackgroundScheduler {
     static func register() {
-        let refresh = BGTaskScheduler.shared.register(forTaskWithIdentifier: WatchTask.refreshID, using: DispatchQueue.main) { task in
-            handle(task, trigger: .backgroundRefresh)
+        // Registering an identifier that Info.plist doesn't list crashes the app, so check first.
+        let permitted = Bundle.main.object(forInfoDictionaryKey: "BGTaskSchedulerPermittedIdentifiers") as? [String] ?? []
+        let tasks: [(String, CheckTrigger)] = [(WatchTask.refreshID, .backgroundRefresh),
+                                               (WatchTask.processingID, .backgroundProcessing)]
+        var problems: [String] = []
+        for (identifier, trigger) in tasks {
+            guard permitted.contains(identifier) else {
+                problems.append("\(identifier) isn't in Info.plist")
+                continue
+            }
+            let registered = BGTaskScheduler.shared.register(forTaskWithIdentifier: identifier, using: DispatchQueue.main) { task in
+                handle(task, trigger: trigger)
+            }
+            if !registered { problems.append("\(identifier) was refused") }
         }
-        let processing = BGTaskScheduler.shared.register(forTaskWithIdentifier: WatchTask.processingID, using: DispatchQueue.main) { task in
-            handle(task, trigger: .backgroundProcessing)
-        }
-        if !refresh || !processing {
-            DebugLog.shared.error(.watch, "Background task registration failed")
+        if !problems.isEmpty {
+            log("Background task registration failed: " + problems.joined(separator: "; "), isError: true)
         }
     }
 
@@ -41,20 +53,32 @@ enum BackgroundScheduler {
         do {
             try BGTaskScheduler.shared.submit(request)
         } catch {
-            DebugLog.shared.warn(.watch, "Couldn't schedule \(request.identifier): \(error.localizedDescription). Background App Refresh may be off for NinjaView.")
+            log("Couldn't schedule \(request.identifier): \(error.localizedDescription). Background App Refresh may be off for NinjaView.")
         }
     }
 
     private static func handle(_ task: BGTask, trigger: CheckTrigger) {
         scheduleAll() // always line up the next one
         let completion = TaskCompletion(task)
-        task.expirationHandler = {
-            DebugLog.shared.warn(.watch, "iOS ended a background run early")
-            completion.finish(false)
-        }
-        Task { @MainActor in
+        let work = Task { @MainActor in
             let ok = await WatchCenter.shared.runBackgroundCheck(trigger: trigger)
             completion.finish(ok)
+        }
+        task.expirationHandler = {
+            work.cancel() // the checks stop at their next cancellation point
+            log("iOS ended a background run early")
+            completion.finish(false)
+        }
+    }
+
+    /// The message is built here; only the finished String crosses to the main actor.
+    private static func log(_ message: String, isError: Bool = false) {
+        Task { @MainActor in
+            if isError {
+                DebugLog.shared.error(.watch, message)
+            } else {
+                DebugLog.shared.warn(.watch, message)
+            }
         }
     }
 }
