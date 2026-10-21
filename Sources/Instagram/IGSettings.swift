@@ -7,6 +7,7 @@ import WebKit
 /// posts and comments. Stories never use it.
 struct IGSettingsSection: View {
     @ObservedObject private var creds = IGCredentials.shared
+    @ObservedObject private var settings = AppSettings.shared
     @State private var signInOpen = false
     @State private var pageOpen = false
 
@@ -19,6 +20,7 @@ struct IGSettingsSection: View {
             } else {
                 Button("Sign in to Instagram") { signInOpen = true }
             }
+            Toggle("Preview posts without signing in", isOn: $settings.viewerPosts)
         } header: {
             Text("Instagram sign-in")
         } footer: {
@@ -29,10 +31,11 @@ struct IGSettingsSection: View {
     }
 
     private var signedOutFooter: String {
+        let preview = " \u{201C}Preview posts without signing in\u{201D} shows an account's newest posts (about 12) from insta-stories-viewer.com without a sign-in; leave it off to use your signed-in Instagram for posts instead. Stories always come from insta-stories-viewer.com either way."
         if creds.isSignedIn {
-            return "Signing in lets NinjaView archive this account's full post history and comments. That account is no longer anonymous while signed in, and it's used only for archiving posts and comments \u{2014} never for stories or highlights. Use a throwaway account: automating a real one can get it rate-limited or flagged. Your password is kept in this iPhone's Keychain."
+            return "Posts are archived from your signed-in Instagram, with full history and comments. That account is no longer anonymous while signed in, and it's used only for posts and comments \u{2014} never for stories or highlights. Use a throwaway account: automating a real one can get it rate-limited or flagged. Your password is kept in this iPhone's Keychain." + preview
         }
-        return "Without signing in, Instagram shows only an account's newest posts, and stories come from insta-stories-viewer.com. Sign in to archive a full post history with comments. Use a throwaway account, since automating a real one risks it being rate-limited or flagged. The password is stored only in this iPhone's Keychain, and stories never use the sign-in."
+        return "Sign in to archive a full post history with comments from Instagram directly. Use a throwaway account, since automating a real one risks it being rate-limited or flagged. The password is stored only in this iPhone's Keychain, and stories never use the sign-in." + preview
     }
 }
 
@@ -92,17 +95,30 @@ struct IGSessionPageSheet: View {
     @Environment(\.dismiss) private var dismiss
     @StateObject private var holder = SessionHolder()
 
+    @State private var loading = true
+
     var body: some View {
         NavigationStack {
-            IGPageContainer(webView: holder.session.bridge.webView)
-                .ignoresSafeArea(edges: .bottom)
-                .navigationTitle("Instagram")
-                .navigationBarTitleDisplayMode(.inline)
-                .toolbar {
-                    ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } }
+            ZStack {
+                Color.nvPaper.ignoresSafeArea()
+                IGPageContainer(webView: holder.session.bridge.webView)
+                    .ignoresSafeArea(edges: .bottom)
+                if loading {
+                    ProgressView("Opening Instagram")
+                        .tint(Color.nvInk)
                 }
+            }
+            .navigationTitle("Instagram")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } }
+            }
         }
-        .task { await holder.start() }
+        .task {
+            await holder.session.prepareForDisplay()
+            loading = false
+        }
+        .onDisappear { holder.finish() }
     }
 
     @MainActor
@@ -118,7 +134,11 @@ struct IGSessionPageSheet: View {
                 ownsSession = true
             }
         }
-        func start() async { _ = await session.ensureSignedIn() }
+        /// Keeps a temporary session parked (not torn down) so a check in progress isn't lost; a
+        /// session owned by the archiver is left entirely alone.
+        func finish() {
+            if ownsSession { session.parkAfterDisplay() }
+        }
         deinit { if ownsSession { let s = session; Task { @MainActor in s.teardown() } } }
     }
 }

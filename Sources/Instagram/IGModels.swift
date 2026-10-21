@@ -112,6 +112,7 @@ enum IGLinks {
 
     static func viewer(_ handle: String) -> URL? { URL(string: "https://insta-stories-viewer.com/\(handle.lowercased())/") }
     static func instagram(_ handle: String) -> URL? { URL(string: "https://www.instagram.com/\(handle.lowercased())/") }
+    static let instagramHome = URL(string: "https://www.instagram.com/")!
     static func isViewer(_ url: URL) -> Bool { (url.host?.lowercased() ?? "").hasSuffix("insta-stories-viewer.com") }
 }
 

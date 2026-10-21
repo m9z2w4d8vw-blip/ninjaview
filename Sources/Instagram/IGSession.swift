@@ -29,8 +29,24 @@ final class IGSession: ObservableObject, PageBridgeDelegate {
     private(set) var blockedCount = 0
 
     init() {
-        bridge = PageBridge(WebFactory.shared.makeInstagramSessionPage(IGLinks.instagram("")?.deletingLastPathComponent() ?? URL(string: "https://www.instagram.com/")!))
+        bridge = PageBridge(WebFactory.shared.makeInstagramSessionPage(IGLinks.instagramHome))
         bridge.delegate = self
+    }
+
+    /// Prepares the hidden page to be shown in the verify sheet: makes sure it's loaded and signed
+    /// in (so the person lands on whatever check Instagram wants), and re-enables touches.
+    func prepareForDisplay() async {
+        ensureStarted()
+        await ensureSignedIn(timeout: 15)
+        bridge.webView.isUserInteractionEnabled = true
+        bridge.webView.accessibilityElementsHidden = false
+    }
+
+    /// Returns the webview to the off-screen dock and turns touches back off.
+    func parkAfterDisplay() {
+        bridge.webView.isUserInteractionEnabled = false
+        bridge.webView.accessibilityElementsHidden = true
+        bridge.park()
     }
 
     private func ensureStarted() {

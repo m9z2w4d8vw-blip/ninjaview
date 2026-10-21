@@ -51,7 +51,9 @@ The Instagram engine (`Sources/Instagram/IGAssets.swift`) is byte-identical to `
 
 Without signing in, Instagram shows only an account's newest posts and NinjaView can't reach older ones; stories come from insta-stories-viewer.com. Sign in to archive an account's **full post history with comments**.
 
-Add a sign-in under **Settings > Instagram sign-in** (username and password, kept only in this iPhone's Keychain). Then, on an Instagram profile or its archive, use **Archive posts** (or the Archive menu's "all posts + comments"). NinjaView signs in on its own hidden instagram.com page, scrolls the whole grid, and opens each post for its photos, videos and complete comment threads, saving them into the same archive as the stories. Replies are threaded under their comments, and an archived post shows its caption, like count and saved comments.
+Add a sign-in under **Settings > Instagram sign-in** (username and password, kept only in this iPhone's Keychain). Once signed in, **posts come from your Instagram session by default** — a profile's Posts section offers **Archive all posts**, which scrolls the whole grid on a hidden instagram.com page and opens each post for its photos, videos and complete comment threads, saving them into the same archive as the stories. Replies are threaded under their comments, and an archived post shows its caption, like count and saved comments.
+
+To instead preview an account's newest posts (about 12) from insta-stories-viewer.com without signing in, turn on **Settings > Instagram sign-in > Preview posts without signing in**. That is the only way posts use the viewer site; stories always come from it.
 
 **Important:**
 - **Use a throwaway account.** Automating a real account can get it rate-limited or flagged. While signed in, that account is no longer anonymous; it's used only for archiving posts and comments.
