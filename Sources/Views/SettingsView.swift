@@ -68,7 +68,7 @@ struct SettingsView: View {
                 } header: {
                     Text("Offline")
                 } footer: {
-                    Text("Opening a profile saves its posts, videos, photos and comments in the background so they open instantly. That copy is erased when NinjaView closes; Archive on a profile keeps one. This can use a lot of cellular data.")
+                    Text("Opening a profile saves its posts, videos, photos, comments and their replies in the background so they open instantly. That copy is erased when NinjaView closes; Archive on a profile keeps one. This can use a lot of cellular data.")
                 }
 
                 Section {

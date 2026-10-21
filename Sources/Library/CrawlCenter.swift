@@ -231,6 +231,12 @@ final class CrawlCenter: ObservableObject {
                     crawl.activity = "Saving \(tab.title.lowercased()) \(item.index + 1) of \(items.count)"
                     await savePost(item, key: key, tab: tab, crawl: crawl, engine: engine)
                     try? await Task.sleep(nanoseconds: CrawlLimits.pause)
+                } else if crawl.mode == .archive, AppSettings.shared.saveComments,
+                          let stored = store.loadPost(crawl.handle, tab, key), stored.needsReplies {
+                    // Saved before, but some reply threads didn't load then: get just those now.
+                    crawl.activity = "Saving replies for \(tab.title.lowercased()) \(item.index + 1) of \(items.count)"
+                    await refreshReplies(stored, item: item, tab: tab, crawl: crawl, engine: engine)
+                    try? await Task.sleep(nanoseconds: CrawlLimits.pause)
                 }
                 crawl.postsDone += 1
             }
@@ -306,6 +312,10 @@ final class CrawlCenter: ObservableObject {
         if crawl.mode == .archive, let cached = ProfileStore.session.loadPost(crawl.handle, tab, key), cached.detail != nil,
            Self.copyFiles(of: cached, from: ProfileStore.session.postFolder(crawl.handle, tab, key), to: folder) {
             store.savePost(cached, handle: crawl.handle, complete: true)
+            // The temporary copy opens fewer reply threads; fill in the rest for the archive.
+            if AppSettings.shared.saveComments && cached.unopenedThreads > 0 {
+                await refreshReplies(cached, item: item, tab: tab, crawl: crawl, engine: engine)
+            }
             return
         }
         var post = StoredPost(key: key, tab: tab.rawValue, item: item, detail: nil, thumbFile: nil, videoFile: nil,
@@ -325,14 +335,18 @@ final class CrawlCenter: ObservableObject {
                 }
             }
             if detail.hasComments && AppSettings.shared.saveComments {
-                let saved = await collectComments(engine)
+                let limit = crawl.mode == .archive ? CrawlLimits.threadsPerPost : CrawlLimits.sessionThreadsPerPost
+                let saved = await collectComments(engine, threadLimit: limit)
                 post.comments = saved.comments
                 post.commentsNote = saved.note
+                post.repliesMissing = saved.missingThreads
             }
             let videoOK = !detail.isVideo || post.videoFile != nil
             let photosOK = post.photoFiles.count == detail.photoURLs.count
             store.savePost(post, handle: crawl.handle, complete: videoOK && photosOK)
-            let media = "\(post.videoFile != nil ? "video" : "no video"), \(post.photoFiles.count) photos, \(post.comments.count) comments"
+            let missing = post.repliesMissing ?? 0
+            let leftOver = missing > 0 ? ", \(missing) reply threads left for the next update" : ""
+            let media = "\(post.videoFile != nil ? "video" : "no video"), \(post.photoFiles.count) photos, \(post.comments.count) comments, \(post.replyCount) replies\(leftOver)"
             DebugLog.shared.add(.crawl, "Saved \(tab.rawValue) \(item.index + 1) of @\(crawl.handle) in \(Int(Date().timeIntervalSince(started) * 1000)) ms: \(media)\(videoOK && photosOK ? "" : ", some media missing")",
                                 level: videoOK && photosOK ? .info : .warning)
         } catch {
@@ -343,32 +357,115 @@ final class CrawlCenter: ObservableObject {
     private struct SavedComments {
         let comments: [CommentItem]
         let note: String
+        /// Threads that said they had replies but wouldn't open (almost always tik.ninja's rate limit).
+        let missingThreads: Int
     }
 
-    /// Every comment the page will load (up to the cap), with reply threads opened.
-    private func collectComments(_ engine: ProfileEngine) async -> SavedComments {
-        guard var snap = try? await engine.openComments() else { return SavedComments(comments: [], note: "") }
+    /// Every comment the page will load (up to the cap), with reply threads opened one at a time.
+    /// A thread that won't open is almost always tik.ninja refusing requests, so this waits longer
+    /// and tries once more; after three refusals in a row it stops opening threads for this post
+    /// and counts the rest as missing, so the next archive update fills them in.
+    private func collectComments(_ engine: ProfileEngine, threadLimit: Int) async -> SavedComments {
+        guard let first = try? await engine.openComments() else {
+            return SavedComments(comments: [], note: "", missingThreads: 0)
+        }
+        var snap = first
         while snap.comments.count < CrawlLimits.commentsPerPost {
             guard let next = try? await engine.moreComments() else { break }
             let grew = next.comments.count > snap.comments.count
             snap = next
             if !grew { break }
         }
-        var opened = 0
-        for comment in snap.comments where !comment.replyLabel.isEmpty {
-            if opened >= CrawlLimits.threadsPerPost { break }
-            opened += 1
-            guard var thread = try? await engine.replies(comment.index) else { continue }
+        var threads: [Int: CommentItem] = [:]
+        var refusals = 0
+        var missing = 0
+        for comment in snap.comments.filter({ !$0.replyLabel.isEmpty }).prefix(threadLimit) {
+            if Task.isCancelled || refusals >= 3 {
+                missing += 1
+                continue
+            }
+            var thread = await openThread(engine, comment.index)
+            if thread == nil {
+                refusals += 1
+                let wait = min(30.0, 5.0 * pow(2.0, Double(refusals - 1)))
+                DebugLog.shared.warn(.crawl, "A reply thread didn't open (tik.ninja may be limiting requests); waiting \(Int(wait)) s")
+                try? await Task.sleep(nanoseconds: UInt64(wait * 1_000_000_000))
+                thread = await openThread(engine, comment.index)
+            }
+            guard var opened = thread else {
+                missing += 1
+                continue
+            }
+            refusals = 0
             var rounds = 0
-            while thread.repliesMore && rounds < 5 {
-                guard let more = try? await engine.moreReplies(comment.index), more.replies.count > thread.replies.count else { break }
-                thread = more
+            while opened.repliesMore && rounds < CrawlLimits.replyRounds {
+                try? await Task.sleep(nanoseconds: CrawlLimits.replyPause)
+                guard let more = try? await engine.moreReplies(comment.index), more.replies.count > opened.replies.count else { break }
+                opened = more
                 rounds += 1
             }
+            threads[comment.index] = opened
+            try? await Task.sleep(nanoseconds: CrawlLimits.replyPause)
         }
-        if let final = try? await engine.commentsState() { snap = final }
+        // The page's final state with the threads opened above put back in: the page may have folded
+        // some up again, and if that last read fails, what was already collected is kept.
+        var base = snap
+        if let latest = try? await engine.commentsState(), !latest.comments.isEmpty { base = latest }
+        let comments = base.comments.map { comment -> CommentItem in
+            guard let thread = threads[comment.index], thread.replies.count > comment.replies.count else { return comment }
+            return thread
+        }
         await engine.closeComments()
-        return SavedComments(comments: snap.comments, note: ProfileEngine.tidy(snap.note))
+        if missing > 0 {
+            DebugLog.shared.warn(.crawl, "\(missing) reply threads didn't load; the next archive update tries them again")
+        }
+        return SavedComments(comments: comments, note: ProfileEngine.tidy(base.note), missingThreads: missing)
+    }
+
+    /// One reply thread, or nil when it didn't open (the site didn't send the replies).
+    private func openThread(_ engine: ProfileEngine, _ index: Int) async -> CommentItem? {
+        guard let thread = try? await engine.replies(index), !thread.replies.isEmpty else { return nil }
+        return thread
+    }
+
+    /// An archived post whose reply threads didn't all load: open it again just for its comments,
+    /// and keep everything else as it was saved.
+    private func refreshReplies(_ stored: StoredPost, item: PostItem, tab: ProfileTab, crawl: Crawl, engine: ProfileEngine) async {
+        let started = Date()
+        do {
+            let detail = try await engine.openItem(tab, item.index)
+            var post = stored
+            guard detail.hasComments else {
+                post.repliesMissing = 0
+                crawl.store.savePost(post, handle: crawl.handle, complete: true)
+                return
+            }
+            let saved = await collectComments(engine, threadLimit: CrawlLimits.threadsPerPost)
+            post.comments = Self.mergeComments(stored.comments, saved.comments)
+            if !saved.note.isEmpty { post.commentsNote = saved.note }
+            post.repliesMissing = saved.missingThreads
+            crawl.store.savePost(post, handle: crawl.handle, complete: true)
+            let still = saved.missingThreads > 0 ? ", \(saved.missingThreads) threads still missing" : ""
+            DebugLog.shared.add(.crawl, "Filled in replies for \(tab.rawValue) \(item.index + 1) of @\(crawl.handle) in \(Int(Date().timeIntervalSince(started) * 1000)) ms: \(stored.replyCount) to \(post.replyCount) replies\(still)")
+        } catch {
+            DebugLog.shared.warn(.crawl, "Couldn't reopen \(tab.rawValue) \(item.index + 1) of @\(crawl.handle) for its replies: \(error.localizedDescription)")
+        }
+    }
+
+    /// Two loads of the same post's comments: keep the longer list, and for each comment whichever
+    /// copy has more replies, so a thread refused this time never erases replies saved before.
+    nonisolated static func mergeComments(_ old: [CommentItem], _ new: [CommentItem]) -> [CommentItem] {
+        func key(_ comment: CommentItem) -> String { comment.handle + "\u{1F}" + comment.text }
+        let base = new.count >= old.count ? new : old
+        let other = new.count >= old.count ? old : new
+        var best: [String: CommentItem] = [:]
+        for comment in other where !comment.replies.isEmpty { best[key(comment)] = comment }
+        return base.map { comment in
+            guard let alt = best[key(comment)], alt.replies.count > comment.replies.count else { return comment }
+            return CommentItem(index: comment.index, handle: comment.handle, text: comment.text, avatar: comment.avatar,
+                               likes: comment.likes, time: comment.time, replyLabel: alt.replyLabel,
+                               repliesOpen: alt.repliesOpen, repliesMore: alt.repliesMore, replies: alt.replies)
+        }
     }
 
     nonisolated private static func copyFiles(of post: StoredPost, from source: URL, to destination: URL) -> Bool {

@@ -15,6 +15,8 @@ final class CommentsModel: ObservableObject {
     @Published private(set) var isLoading = true
     @Published private(set) var isLoadingMore = false
     @Published private(set) var note = ""
+    /// Under a saved post's comments when some reply threads didn't load.
+    @Published private(set) var footnote = ""
     @Published private(set) var error: String? = nil
     @Published private(set) var expanded: Set<Int> = []
     @Published private(set) var loadingReplies: Set<Int> = []
@@ -35,6 +37,9 @@ final class CommentsModel: ObservableObject {
         if useSaved {
             comments = saved?.comments ?? []
             note = saved?.commentsNote ?? ""
+            if let missing = saved?.repliesMissing, missing > 0 {
+                footnote = "Replies to \(missing) \(missing == 1 ? "comment" : "comments") didn't load when this was saved. Updating the archive tries them again."
+            }
             isLoading = false
             exhausted = true
             started = true
@@ -206,6 +211,13 @@ struct CommentsSheet: View {
                 if model.isLoadingMore {
                     ProgressView()
                         .frame(maxWidth: .infinity)
+                        .listRowBackground(Color.nvPaper)
+                        .listRowSeparator(.hidden)
+                }
+                if !model.footnote.isEmpty {
+                    Text(model.footnote)
+                        .font(.footnote)
+                        .foregroundStyle(Color.nvMuted)
                         .listRowBackground(Color.nvPaper)
                         .listRowSeparator(.hidden)
                 }

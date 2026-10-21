@@ -6,7 +6,14 @@ enum CrawlLimits {
     static let sessionPostsPerTab = 300
     static let archivePostsPerTab = 5000
     static let commentsPerPost = 400
-    static let threadsPerPost = 60
+    /// Reply threads opened per post in an archive.
+    static let threadsPerPost = 150
+    /// Reply threads opened per post in the temporary copy made when a profile opens.
+    static let sessionThreadsPerPost = 60
+    /// "View more replies" presses per thread.
+    static let replyRounds = 10
+    /// Between reply requests, so a post with many threads doesn't trip tik.ninja's rate limit.
+    static let replyPause: UInt64 = 700_000_000
     static let usersPerList = 2000
     /// A short pause between posts, to go easy on tik.ninja.
     static let pause: UInt64 = 350_000_000
@@ -24,6 +31,21 @@ struct StoredPost: Codable {
     var comments: [CommentItem]
     var commentsNote: String
     var savedAt: Date
+    /// Reply threads that wouldn't open when this was saved (nil for posts saved before this was counted).
+    var repliesMissing: Int? = nil
+}
+
+extension StoredPost {
+    var replyCount: Int { comments.reduce(0) { $0 + $1.replies.count } }
+
+    /// Comments that say they have replies but have none saved.
+    var unopenedThreads: Int { comments.filter { !$0.replyLabel.isEmpty && $0.replies.isEmpty }.count }
+
+    /// Whether an archive update should open this post again for its replies.
+    var needsReplies: Bool {
+        if let missing = repliesMissing { return missing > 0 }
+        return unopenedThreads > 0
+    }
 }
 
 /// A post's place in a saved grid, in the order the profile showed it.

@@ -30,6 +30,10 @@ If the build fails, open the failed run. The **Summarize compiler errors** step 
 - Under each post: comments (with reply threads), share, audio (through tik.ninja's own download) and save to Photos. The ... menu has the same, plus copying the caption. Tapping an @mention in a caption opens that profile.
 - Tapping a follower, a followed account or a commenter opens their profile.
 
+### Comments and replies in archives
+
+With **Include comments** on, an archive saves each post's comments (up to 400) and opens their reply threads (up to 150 threads per post, with every reply in each). Threads open one at a time with a short pause. A thread that won't open is almost always tik.ninja limiting requests, so the archive waits (5, then 10, then 20 seconds) and tries again, and after three refusals in a row it leaves the rest of that post's threads for later. **Update** on the archive revisits only those posts for their missing replies, without downloading the media again; archives made before this change get their missing replies the same way. A saved post's comments say when some replies are still missing.
+
 ### Instagram
 
 Switch the home screen to **Instagram** and enter a username, @username or an instagram.com profile link. Instagram profiles come from insta-stories-viewer.com, loaded in a hidden page like tik.ninja is for TikTok; everything you see is native.
