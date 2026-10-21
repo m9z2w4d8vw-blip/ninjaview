@@ -44,7 +44,23 @@ final class IGArchive: ObservableObject {
         var replyCount: Int { comments.filter { !$0.parent.isEmpty }.count }
 
         private enum CodingKeys: String, CodingKey {
+            // `file` is read for backward compatibility (decode) but never written; `files` replaces it.
             case key, kind, media, files, file, cover, original, savedAt, caption, likes, takenAt, comments
+        }
+
+        func encode(to encoder: Encoder) throws {
+            var c = encoder.container(keyedBy: CodingKeys.self)
+            try c.encode(key, forKey: .key)
+            try c.encode(kind, forKey: .kind)
+            try c.encode(media, forKey: .media)
+            try c.encode(files, forKey: .files)
+            try c.encode(cover, forKey: .cover)
+            try c.encode(original, forKey: .original)
+            try c.encode(savedAt, forKey: .savedAt)
+            try c.encode(caption, forKey: .caption)
+            try c.encode(likes, forKey: .likes)
+            try c.encode(takenAt, forKey: .takenAt)
+            try c.encode(comments, forKey: .comments)
         }
 
         init(key: String, kind: String, media: String, files: [String], cover: String, original: String,

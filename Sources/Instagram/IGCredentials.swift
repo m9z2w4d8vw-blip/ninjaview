@@ -28,7 +28,8 @@ final class IGCredentials: ObservableObject {
             return false
         }
         // A different account was signed in before: drop its stored password.
-        if let old = username, old.lowercased() != name.lowercased() { remove(account: old) }
+        // `username` here is the method's parameter; the stored property is `self.username`.
+        if let old = self.username, old.lowercased() != name.lowercased() { remove(account: old) }
         self.username = name
         UserDefaults.standard.set(name, forKey: usernameKey)
         DebugLog.shared.add(.store, "Saved Instagram sign-in for @\(name)")
