@@ -8,12 +8,14 @@ Everything happens in the browser on github.com.
 
 1. Download `NinjaView-repo.zip` and extract it (right-click, **Extract All**). Don't upload the .zip itself; GitHub won't unpack it.
 2. On the repo page, choose **Add file > Upload files**.
-3. Open the extracted folder, select everything inside it with Ctrl+A (including `.github` and `.gitignore`), and drag it onto the upload page. Folders have to be dragged; the "choose your files" picker only takes single files.
+3. Open the extracted folder, select everything inside it with Ctrl+A, and drag it onto the upload page. Folders have to be dragged; the "choose your files" picker only takes single files.
 4. Leave it on **Commit directly to the main branch** and click **Commit changes**.
 
 Uploaded files replace the ones with the same name and folder. Files you don't upload are left alone, so if an update ever removes or renames a file, delete the old copy on GitHub (open the file, then **... > Delete file**).
 
-Every commit builds the app; watch it under **Actions** (about five minutes). Each build on `main` is published on the **Releases** page as `NinjaView.ipa`, a plain .ipa, not a zip. The newest one is always at `https://github.com/<you>/<repo>/releases/latest/download/NinjaView.ipa` (for a public repo). Builds on other branches attach the .ipa to their run on the Actions page instead.
+Uploads skip anything whose name starts with a dot, so they never change `.github/workflows/build.yml`. To change the workflow, open that file on GitHub, tap the pencil, replace its contents, and commit to `main`.
+
+Every commit builds the app; watch it under **Actions** (about five minutes). If GitHub ever misses an upload, an hourly check at 17 minutes past the hour builds the newest commit on `main` once (it never builds a commit twice, and it removes its own checks that had nothing to do). **Run workflow** on the Actions tab builds on demand. Each build on `main` is published on the **Releases** page as `NinjaView.ipa`, a plain .ipa, not a zip. The newest one is always at `https://github.com/<you>/<repo>/releases/latest/download/NinjaView.ipa` (for a public repo). Builds on other branches attach the .ipa to their run on the Actions page instead.
 
 On the iPhone, download the .ipa from Releases, open it in TrollStore, and tap **Install**. The build number goes up with every run, so TrollStore treats each one as an update.
 
@@ -45,6 +47,20 @@ Switch the home screen to **Instagram** and enter a username, @username or an in
 
 The Instagram engine (`Sources/Instagram/IGAssets.swift`) is byte-identical to `igengine.js`, which was tested in Chromium against five saved insta-stories-viewer.com pages (stories, the story viewer, posts and the post viewer) plus simulated private, empty, retry, captcha and missing-account states.
 
+### Signing in to Instagram (full posts and comments)
+
+Without signing in, Instagram shows only an account's newest posts and NinjaView can't reach older ones; stories come from insta-stories-viewer.com. Sign in to archive an account's **full post history with comments**.
+
+Add a sign-in under **Settings > Instagram sign-in** (username and password, kept only in this iPhone's Keychain). Then, on an Instagram profile or its archive, use **Archive posts** (or the Archive menu's "all posts + comments"). NinjaView signs in on its own hidden instagram.com page, scrolls the whole grid, and opens each post for its photos, videos and complete comment threads, saving them into the same archive as the stories. Replies are threaded under their comments, and an archived post shows its caption, like count and saved comments.
+
+**Important:**
+- **Use a throwaway account.** Automating a real account can get it rate-limited or flagged. While signed in, that account is no longer anonymous; it's used only for archiving posts and comments.
+- **Stories and highlights never use the sign-in**, under any circumstances. A guard injected before Instagram's own page runs refuses every story and highlight tap, request and navigation; this was tested against saved pages.
+- **It runs only while the app is open.** A full history of a large account is a one-time wait, and Instagram may rate-limit partway; archiving saves as it goes and resumes on the next run, skipping posts already saved. A pause between posts keeps it under Instagram's limits.
+- **A checkpoint** ("was this you", a code, or two-factor) surfaces as a prompt; open the page from Settings or the archiver, clear it, and run again.
+
+The signed-in engine (`Sources/Instagram/IGSessionAssets.swift`) is byte-identical to the tested `igsession.js`, checked in Chromium against ten saved instagram.com pages (home, profile and several posts): signed-in detection, scrolling the grid to the end, reading every comment and reply with authors, timestamps and likes, pulling real media URLs from Instagram's own data, and the story/highlight guard blocking exactly the story actions and nothing else.
+
 ### New-post notifications
 
 Tap the **bell** on a profile to choose what that account notifies you about: **Posts**, **Stories** and **Reposts** (the three tik.ninja tabs, each checked separately and only if it's turned on). The bell turns pink, a line under the profile's buttons says which kinds are on, and a small pink bell appears on that account's picture on the home screen. Manage the list, change an account, or tap **Check now** under **Settings > Notifications > Watched accounts**. The first check of each kind is silent, so posts that were already there don't notify. Allow notifications when asked.
@@ -60,7 +76,7 @@ The TrollStore build is fakesigned (with `ldid`, in the workflow) carrying the T
 
 **One honest caveat.** NinjaView detects new activity by driving a hidden tik.ninja page, and iOS throttles web content in the background. Instant mode keeps the whole app awake, which gives the background checks their best chance, but whether that hidden page runs reliably in the background is the open question. The checks when the app is open always work. **Settings > Diagnostics > Export debug log (.txt)** records every check (filter the in-app log by the `watch` area) and whether it completed, so after a day you can see whether background checks are landing. If they aren't, a small script on an always-on computer is the reliable route — ask and I can build one.
 
-### Offline copy for the session### Offline copy for the session
+### Offline copy for the session
 
 Opening a profile starts a background download of everything on it: posts, reposts, stories and highlights (video files, photos and covers), comments with their reply threads, follower and following lists, and analytics. A line under the profile's buttons shows progress. Posts that have finished play from the phone. The copy is erased when NinjaView closes. It runs on its own hidden page, one profile at a time, newest first. Turn it off, or leave out comments or lists, in **Settings > Offline**.
 
@@ -88,6 +104,7 @@ The selectors live in `Sources/Engine/WebAssets.swift` (`engineJS`) and match ti
 
 ```
 .github/workflows/build.yml   CI: XcodeGen, unsigned build, IPA, release
+Sources/Instagram/              Instagram: anonymous viewer + signed-in posts/comments archiver
 project.yml                   XcodeGen spec (iOS 17, unsigned)
 Config/Info.plist             build number comes from the Actions run number
 Resources/Assets.xcassets     app icon and accent color

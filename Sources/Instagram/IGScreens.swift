@@ -8,6 +8,7 @@ struct IGProfileScreen: View {
     @ObservedObject private var engine: IGEngine
     @ObservedObject private var archive = IGArchive.shared
     @ObservedObject private var watch = WatchCenter.shared
+    @ObservedObject private var postArchiver = IGPostArchiver.shared
     @EnvironmentObject private var app: AppModel
     @EnvironmentObject private var downloads: DownloadCenter
     @State private var viewer: IGViewerRequest? = nil
@@ -147,16 +148,32 @@ struct IGProfileScreen: View {
     }
 
     @ViewBuilder private func archiveButton(_ profile: IGProfile) -> some View {
-        if let status = archive.progress[profile.handle.lowercased()] {
+        if IGPostArchiver.shared.isRunning(profile.handle) {
+            Button {} label: { Label(IGPostArchiver.shared.status.isEmpty ? "Archiving" : IGPostArchiver.shared.status, systemImage: "arrow.down.circle") }
+                .buttonStyle(InstaButtonStyle())
+                .disabled(true)
+        } else if let status = archive.progress[profile.handle.lowercased()] {
             Button {} label: { Label(status, systemImage: "arrow.down.circle") }
                 .buttonStyle(InstaButtonStyle())
                 .disabled(true)
         } else {
-            Button { archiveNow(profile) } label: {
+            Menu {
+                Button { archiveNow(profile) } label: { Label(archive.has(profile.handle) ? "Update stories + visible posts" : "Archive stories + visible posts", systemImage: "archivebox") }
+                if IGCredentials.shared.isSignedIn {
+                    Button { archiveAllPosts(profile.handle) } label: { Label("Archive all posts + comments (signed in)", systemImage: "square.grid.3x3") }
+                }
+            } label: {
                 Label(archive.has(profile.handle) ? "Update" : "Archive", systemImage: "archivebox")
             }
             .buttonStyle(InstaButtonStyle())
             .disabled(profile.isPrivate)
+        }
+    }
+
+    private func archiveAllPosts(_ handle: String) {
+        Task {
+            let summary = await IGPostArchiver.shared.run(handle)
+            downloads.show(summary.hasPrefix("Couldn't") || summary.hasPrefix("Add") || summary.contains("wants") ? .failure : .success, summary)
         }
     }
 
@@ -356,9 +373,12 @@ struct IGProfileScreen: View {
 struct IGArchiveScreen: View {
     let handle: String
     @ObservedObject private var archive = IGArchive.shared
+    @ObservedObject private var postArchiver = IGPostArchiver.shared
+    @ObservedObject private var creds = IGCredentials.shared
     @EnvironmentObject private var app: AppModel
     @EnvironmentObject private var downloads: DownloadCenter
     @State private var viewer: IGViewerRequest? = nil
+    @State private var postDetail: IGArchive.Item? = nil
     @State private var showStories = false
     @State private var confirmDelete = false
 
@@ -392,6 +412,11 @@ struct IGArchiveScreen: View {
                 .environmentObject(AvatarStore.shared)
                 .environmentObject(DownloadCenter.shared)
         }
+        .fullScreenCover(item: $postDetail) { item in
+            IGPostDetailView(handle: handle, post: item)
+                .environmentObject(AvatarStore.shared)
+                .environmentObject(DownloadCenter.shared)
+        }
         .confirmationDialog("Delete this archive?", isPresented: $confirmDelete, titleVisibility: .visible) {
             Button("Delete @\(handle)", role: .destructive) { archive.delete(handle) }
         } message: {
@@ -409,21 +434,37 @@ struct IGArchiveScreen: View {
                     .padding(.top, 8)
                 HStack(spacing: 6) {
                     Button { update() } label: {
-                        Label(archive.isWorking(handle) ? "Updating" : "Update", systemImage: "arrow.clockwise")
+                        Label(archive.isWorking(handle) ? "Updating stories" : "Update stories", systemImage: "arrow.clockwise")
                     }
                     .buttonStyle(InstaButtonStyle())
-                    .disabled(archive.isWorking(handle))
+                    .disabled(archive.isWorking(handle) || postArchiver.isRunning(handle))
+                    archivePostsButton
                     Button { app.openInstagram(handle) } label: {
-                        Label("Live profile", systemImage: "person.crop.circle")
+                        Label("Live", systemImage: "person.crop.circle")
                     }
                     .buttonStyle(InstaButtonStyle())
                 }
                 .padding(.horizontal, 16)
                 .padding(.top, 14)
-                if let status = archive.progress[account.id] {
+                if postArchiver.isRunning(handle) {
+                    archiveProgress
+                } else if let status = archive.progress[account.id] {
                     statusText(status)
                 } else if !account.note.isEmpty {
                     statusText(account.note)
+                }
+                if !creds.isSignedIn {
+                    Text("Sign in to Instagram in Settings to archive this account's full post history and comments. Stories stay anonymous either way.")
+                        .font(.caption)
+                        .foregroundStyle(Color.nvMuted)
+                        .padding(.horizontal, 16)
+                        .padding(.top, 6)
+                } else if account.signedIn {
+                    Text("Posts and comments archived while signed in.")
+                        .font(.caption)
+                        .foregroundStyle(Color.nvMuted)
+                        .padding(.horizontal, 16)
+                        .padding(.top, 6)
                 }
                 Picker("Show", selection: $showStories) {
                     Text("Posts (\(account.posts.count))").tag(false)
@@ -442,9 +483,9 @@ struct IGArchiveScreen: View {
                 } else {
                     LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 2), count: 3), spacing: 2) {
                         ForEach(Array(items.enumerated()), id: \.element.id) { offset, item in
-                            Button { open(items, at: offset) } label: {
+                            Button { showStories ? open(items, at: offset) : (postDetail = item) } label: {
                                 IGCell(thumb: thumb(item), isVideo: item.isVideo,
-                                       label: showStories ? item.savedAt.formatted(.dateTime.month(.abbreviated).day()) : "")
+                                       label: showStories ? item.savedAt.formatted(.dateTime.month(.abbreviated).day()) : (item.comments.isEmpty ? "" : "\(item.comments.count) \u{1F4AC}"))
                             }
                             .buttonStyle(.plain)
                         }
@@ -452,6 +493,42 @@ struct IGArchiveScreen: View {
                 }
             }
             .padding(.bottom, 24)
+        }
+    }
+
+    @ViewBuilder private var archivePostsButton: some View {
+        if postArchiver.isRunning(handle) {
+            Button { postArchiver.cancel() } label: { Label("Stop", systemImage: "stop.circle") }
+                .buttonStyle(InstaButtonStyle())
+        } else {
+            Button { archiveAllPosts() } label: {
+                Label(creds.isSignedIn ? "Archive posts" : "Posts (sign in)", systemImage: "square.grid.3x3")
+            }
+            .buttonStyle(InstaButtonStyle())
+            .disabled(!creds.isSignedIn || archive.isWorking(handle))
+        }
+    }
+
+    private var archiveProgress: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(postArchiver.status)
+                .font(.footnote)
+                .foregroundStyle(Color.nvInk)
+            if postArchiver.total > 0 {
+                ProgressView(value: Double(postArchiver.done), total: Double(postArchiver.total))
+                    .tint(Color.nvSignal)
+            } else {
+                ProgressView().tint(Color.nvSignal)
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.top, 12)
+    }
+
+    private func archiveAllPosts() {
+        Task {
+            let summary = await postArchiver.run(handle)
+            downloads.show(summary.hasPrefix("Couldn't") || summary.hasPrefix("Add") || summary.contains("wants") ? .failure : .success, summary)
         }
     }
 

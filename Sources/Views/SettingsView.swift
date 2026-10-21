@@ -131,6 +131,8 @@ struct SettingsView: View {
                     Text("Only matters when you open tik.ninja's page itself from a profile's menu. It hides the site's header, search box and footer.")
                 }
 
+                IGSettingsSection()
+
                 Section {
                     NavigationLink("Debug log") { DebugLogView() }
                     Button("Export debug log (.txt)") {

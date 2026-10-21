@@ -144,6 +144,13 @@ final class PageBridge: NSObject {
         }
     }
 
+    /// Loads a new URL into this page and waits (via waitUntilReady) for it to settle.
+    func loadURL(_ url: URL) {
+        guard !isTornDown else { return }
+        isReady = false
+        webView.load(URLRequest(url: url))
+    }
+
     func reload(fallback: URL? = nil) {
         isReady = false
         if webView.url == nil {
