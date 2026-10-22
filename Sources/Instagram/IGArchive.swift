@@ -35,6 +35,9 @@ final class IGArchive: ObservableObject {
         var takenAt: String = ""
         /// Comments and replies saved with a post (signed-in archiving only).
         var comments: [StoredComment] = []
+        var expectedComments: Int = 0
+        var commentsComplete: Bool = false
+        var commentsNote: String = ""
 
         var id: String { kind + ":" + key }
         var isVideo: Bool { media == "video" }
@@ -45,7 +48,7 @@ final class IGArchive: ObservableObject {
 
         private enum CodingKeys: String, CodingKey {
             // `file` is read for backward compatibility (decode) but never written; `files` replaces it.
-            case key, kind, media, files, file, cover, original, savedAt, caption, likes, takenAt, comments
+            case key, kind, media, files, file, cover, original, savedAt, caption, likes, takenAt, comments, expectedComments, commentsComplete, commentsNote
         }
 
         func encode(to encoder: Encoder) throws {
@@ -61,13 +64,18 @@ final class IGArchive: ObservableObject {
             try c.encode(likes, forKey: .likes)
             try c.encode(takenAt, forKey: .takenAt)
             try c.encode(comments, forKey: .comments)
+            try c.encode(expectedComments, forKey: .expectedComments)
+            try c.encode(commentsComplete, forKey: .commentsComplete)
+            try c.encode(commentsNote, forKey: .commentsNote)
         }
 
         init(key: String, kind: String, media: String, files: [String], cover: String, original: String,
-             savedAt: Date, caption: String = "", likes: Int = 0, takenAt: String = "", comments: [StoredComment] = []) {
+             savedAt: Date, caption: String = "", likes: Int = 0, takenAt: String = "", comments: [StoredComment] = [],
+             expectedComments: Int = 0, commentsComplete: Bool = false, commentsNote: String = "") {
             self.key = key; self.kind = kind; self.media = media; self.files = files; self.cover = cover
             self.original = original; self.savedAt = savedAt; self.caption = caption; self.likes = likes
             self.takenAt = takenAt; self.comments = comments
+            self.expectedComments = expectedComments; self.commentsComplete = commentsComplete; self.commentsNote = commentsNote
         }
 
         /// Tolerant decode: archives written before carousels/comments stored a single `file`.
@@ -90,6 +98,9 @@ final class IGArchive: ObservableObject {
             likes = (try? c.decode(Int.self, forKey: .likes)) ?? 0
             takenAt = (try? c.decode(String.self, forKey: .takenAt)) ?? ""
             comments = (try? c.decode([StoredComment].self, forKey: .comments)) ?? []
+            expectedComments = (try? c.decode(Int.self, forKey: .expectedComments)) ?? 0
+            commentsComplete = (try? c.decode(Bool.self, forKey: .commentsComplete)) ?? false
+            commentsNote = (try? c.decode(String.self, forKey: .commentsNote)) ?? ""
         }
     }
 
@@ -292,12 +303,21 @@ final class IGArchive: ObservableObject {
             DebugLog.shared.error(.store, "Couldn't create the Instagram archive for @\(handle): \(error.localizedDescription)")
             return false
         }
-        var files: [String] = []
-        var cover = ""
+        let existing = accounts[key]?.posts.first(where: { $0.key == grid.code })
+        // Refreshing an incomplete capture must not discard earlier replies or redownload media.
+        // Reuse media already stored on disk; don't replace existing media while fixing comments.
+        let canReuse = existing.map { old in
+            !old.files.isEmpty && old.files.allSatisfy {
+                FileManager.default.fileExists(atPath: dir.appendingPathComponent($0).path)
+            }
+        } ?? false
+        var files: [String] = canReuse ? (existing?.files ?? []) : []
+        var cover = canReuse ? (existing?.cover ?? "") : ""
         let base = "post-" + Self.safe(detail.code.isEmpty ? grid.code : detail.code)
         let media = detail.media.isEmpty ? [] : detail.media
-        var anyVideo = false
-        for (i, m) in media.enumerated() {
+        var anyVideo = canReuse && (existing?.isVideo == true)
+        if !canReuse {
+          for (i, m) in media.enumerated() {
             guard let url = m.mediaURL, let temp = await fetchFile(url) else { continue }
             let ext = Self.fileExtension(of: temp, media: m.isVideo ? "video" : "image", filename: "")
             let name = media.count > 1 ? "\(base)-\(i + 1).\(ext)" : "\(base).\(ext)"
@@ -317,18 +337,29 @@ final class IGArchive: ObservableObject {
             } else if ext == "mp4" || ext == "mov" {
                 anyVideo = true
             }
+          }
         }
         guard !files.isEmpty else {
             DebugLog.shared.warn(.store, "Instagram post \(detail.code) had no saveable media")
             return false
         }
-        let comments = detail.comments.map { c in
-            StoredComment(id: c.id, parent: c.parent, author: c.author, verified: c.verified, text: c.text, time: c.time, likes: c.likes)
+        var commentsByID: [String: StoredComment] = [:]
+        for old in existing?.comments ?? [] { commentsByID[old.id] = old }
+        for c in detail.comments {
+            commentsByID[c.id] = StoredComment(id: c.id, parent: c.parent, author: c.author,
+                                               verified: c.verified, text: c.text, time: c.time, likes: c.likes)
         }
+        let comments = commentsByID.values.sorted { ($0.time, $0.id) < ($1.time, $1.id) }
+        let expected = max(existing?.expectedComments ?? 0, detail.expectedComments ?? 0, grid.comments ?? 0)
+        let complete = (detail.commentsComplete ?? false) && (expected == 0 || comments.count >= expected)
         let item = Item(key: detail.code.isEmpty ? grid.code : detail.code, kind: "post",
                         media: anyVideo && files.count == 1 ? "video" : (grid.video && files.count == 1 ? "video" : "image"),
                         files: files, cover: cover, original: "", savedAt: Date(),
-                        caption: detail.caption, likes: detail.likes, takenAt: detail.date, comments: comments)
+                        caption: detail.caption.isEmpty ? (existing?.caption ?? "") : detail.caption,
+                        likes: detail.likes, takenAt: detail.date.isEmpty ? (existing?.takenAt ?? "") : detail.date,
+                        comments: comments, expectedComments: expected,
+                        commentsComplete: complete || (existing?.commentsComplete == true && comments.count >= expected),
+                        commentsNote: complete ? "" : (detail.commentsNote ?? "Comments may be incomplete"))
 
         let now = Date()
         var account = accounts[key] ?? Account(handle: detail.author.isEmpty ? handle : detail.author, bio: "", stats: [],

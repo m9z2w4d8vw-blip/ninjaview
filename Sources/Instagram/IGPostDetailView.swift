@@ -165,17 +165,15 @@ struct IGCommentsSheet: View {
     let post: IGArchive.Item
     @Environment(\.dismiss) private var dismiss
 
-    private var topLevel: [IGArchive.StoredComment] { post.comments.filter { $0.parent.isEmpty } }
+    private var commentIDs: Set<String> { Set(post.comments.map(\.id)) }
+    private var topLevel: [IGArchive.StoredComment] {
+        post.comments.filter { $0.parent.isEmpty || !commentIDs.contains($0.parent) }
+    }
     private func replies(to id: String) -> [IGArchive.StoredComment] { post.comments.filter { $0.parent == id } }
 
     var body: some View {
         NavigationStack {
             List {
-                if !post.caption.isEmpty {
-                    Section {
-                        commentRow(author: handle, verified: false, text: post.caption, time: post.takenAt, likes: post.likes, indent: false)
-                    }
-                }
                 Section {
                     ForEach(topLevel, id: \.id) { c in
                         commentRow(author: c.author, verified: c.verified, text: c.text, time: c.time, likes: c.likes, indent: false)
@@ -184,12 +182,20 @@ struct IGCommentsSheet: View {
                         }
                     }
                 } header: {
-                    Text(post.comments.isEmpty ? "No comments saved" : "\(post.comments.count) comments")
+                    Text(post.comments.isEmpty ? "No comments saved" : "\(post.comments.count) comments saved")
+                }
+                if !post.commentsComplete {
+                    let missing = max(0, post.expectedComments - post.comments.count)
+                    Text(missing > 0 ? "At least \(missing) comments or replies weren't captured. Update posts to retry." :
+                         "Some replies may be missing. Update posts to retry.")
+                        .font(.footnote)
+                        .foregroundStyle(Color.nvMuted)
+                        .listRowSeparator(.hidden)
                 }
             }
             .listStyle(.plain)
             .background(Color.nvPaper)
-            .navigationTitle("Comments")
+            .navigationTitle(post.expectedComments > 0 ? "\(post.expectedComments) comments" : "Comments")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } } }
         }

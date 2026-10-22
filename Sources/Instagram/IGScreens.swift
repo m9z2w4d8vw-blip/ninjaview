@@ -428,8 +428,10 @@ struct IGArchiveScreen: View {
     @ObservedObject private var creds = IGCredentials.shared
     @EnvironmentObject private var app: AppModel
     @EnvironmentObject private var downloads: DownloadCenter
-    @State private var viewer: IGViewerRequest? = nil
-    @State private var postDetail: IGArchive.Item? = nil
+    @State private var feedItems: [IGArchive.Item] = []
+    @State private var feedStart = 0
+    @State private var feedStories = false
+    @State private var showFeed = false
     @State private var showStories = false
     @State private var confirmDelete = false
 
@@ -458,15 +460,8 @@ struct IGArchiveScreen: View {
                 .accessibilityLabel("More")
             }
         }
-        .fullScreenCover(item: $viewer) { request in
-            IGViewer(request: request)
-                .environmentObject(AvatarStore.shared)
-                .environmentObject(DownloadCenter.shared)
-        }
-        .fullScreenCover(item: $postDetail) { item in
-            IGPostDetailView(handle: handle, post: item)
-                .environmentObject(AvatarStore.shared)
-                .environmentObject(DownloadCenter.shared)
+        .navigationDestination(isPresented: $showFeed) {
+            IGArchivedFeedScreen(handle: handle, items: feedItems, stories: feedStories, start: feedStart)
         }
         .confirmationDialog("Delete this archive?", isPresented: $confirmDelete, titleVisibility: .visible) {
             Button("Delete @\(handle)", role: .destructive) { archive.delete(handle) }
@@ -478,9 +473,11 @@ struct IGArchiveScreen: View {
     private func archived(_ account: IGArchive.Account) -> some View {
         let items = showStories ? account.stories : account.posts
         return ScrollView {
-            VStack(alignment: .leading, spacing: 0) {
+            LazyVStack(alignment: .leading, spacing: 0, pinnedViews: [.sectionHeaders]) {
                 InstaHeader(header: ProfileHeader(handle: account.handle, name: "", bio: account.bio, avatar: "", stats: account.stats),
-                            avatarURL: archive.avatarURL(handle), hasStories: false, onAvatarTap: {}, onStatTap: { _ in })
+                            avatarURL: archive.avatarURL(handle), hasStories: !account.stories.isEmpty,
+                            onAvatarTap: { if !account.stories.isEmpty { open(account.stories, at: 0) } },
+                            onStatTap: { _ in })
                     .padding(.horizontal, 16)
                     .padding(.top, 8)
                 HStack(spacing: 6) {
@@ -517,30 +514,34 @@ struct IGArchiveScreen: View {
                         .padding(.horizontal, 16)
                         .padding(.top, 6)
                 }
-                Picker("Show", selection: $showStories) {
-                    Text("Posts (\(account.posts.count))").tag(false)
-                    Text("Stories (\(account.stories.count))").tag(true)
-                }
-                .pickerStyle(.segmented)
-                .padding(.horizontal, 16)
-                .padding(.top, 18)
-                .padding(.bottom, 10)
-                if items.isEmpty {
-                    Text(showStories ? "No stories saved yet. New ones are added every time this archive updates, so they stay after Instagram removes them."
-                                     : "No posts saved yet.")
-                        .font(.footnote)
-                        .foregroundStyle(Color.nvMuted)
-                        .padding(16)
-                } else {
-                    LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 2), count: 3), spacing: 2) {
-                        ForEach(Array(items.enumerated()), id: \.element.id) { offset, item in
-                            Button { showStories ? open(items, at: offset) : (postDetail = item) } label: {
-                                IGCell(thumb: thumb(item), isVideo: item.isVideo,
-                                       label: showStories ? item.savedAt.formatted(.dateTime.month(.abbreviated).day()) : (item.comments.isEmpty ? "" : "\(item.comments.count) \u{1F4AC}"))
+                Section {
+                    if items.isEmpty {
+                        Text(showStories ? "No stories saved yet. New ones are added every time this archive updates."
+                                         : "No posts saved yet.")
+                            .font(.footnote)
+                            .foregroundStyle(Color.nvMuted)
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 44)
+                    } else {
+                        // The same three-column, square grid and pinned icon tab bar
+                        // used by ArchiveProfileView for TikTok.
+                        LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 2), count: 3), spacing: 2) {
+                            ForEach(Array(items.enumerated()), id: \.element.id) { offset, item in
+                                Button { open(items, at: offset) } label: {
+                                    IGCell(thumb: thumb(item), isVideo: item.isVideo,
+                                           label: showStories ? item.savedAt.formatted(.dateTime.month(.abbreviated).day()) : "",
+                                           isCarousel: item.files.count > 1)
+                                }
+                                .buttonStyle(.plain)
                             }
-                            .buttonStyle(.plain)
                         }
                     }
+                } header: {
+                    InstaTabBar(tabs: [.videos, .stories], selected: showStories ? .stories : .videos) {
+                        showStories = $0 == .stories
+                    }
+                    .padding(.top, 14)
+                    .background(Color.nvPaper)
                 }
             }
             .padding(.bottom, 24)
@@ -596,7 +597,10 @@ struct IGArchiveScreen: View {
     }
 
     private func open(_ items: [IGArchive.Item], at index: Int) {
-        viewer = IGViewerRequest.archived(items, handle: handle, stories: showStories, start: index)
+        feedItems = items
+        feedStories = showStories
+        feedStart = index
+        showFeed = true
     }
 
     private func update() {

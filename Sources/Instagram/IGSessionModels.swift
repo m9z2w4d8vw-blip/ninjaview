@@ -91,4 +91,8 @@ struct IGPostDetail: Codable {
     let mediaFrom: String
     let comments: [IGComment]
     let expandRounds: Int
+    /// Instagram's known total, if available; includes nested replies.
+    var expectedComments: Int? = nil
+    var commentsComplete: Bool? = nil
+    var commentsNote: String? = nil
 }
