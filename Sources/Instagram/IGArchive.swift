@@ -41,6 +41,13 @@ final class IGArchive: ObservableObject {
         var commentsComplete: Bool = false
         /// Comments Instagram counts that aren't saved yet.
         var commentsMissing: Int { max(0, commentCount - comments.count) }
+        /// Saved by a build that misread some comments: the text came out as the commenter's own name
+        /// or a reply toggle ("Hide all replies"). The next update reads the post again.
+        var hasMisreadComments: Bool {
+            comments.contains { c in
+                c.text == c.author || c.text.range(of: #"^(Hide|View) (all )?(\d+ )?(more )?repl"#, options: [.regularExpression, .caseInsensitive]) != nil
+            }
+        }
 
         var id: String { kind + ":" + key }
         var isVideo: Bool { media == "video" }

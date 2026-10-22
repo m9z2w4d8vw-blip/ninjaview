@@ -385,7 +385,45 @@ enum IGSessionAssets {
     return art || q('main') || document.body;
   }
   function commentTimes(root) { return qa('a[href*="/c/"] time', root); }
-  function readComments(root) {
+  // Text Instagram draws around a comment that is never the comment itself.
+  var COMMENT_LABEL = /^(Reply|See translation|Hide translation|Edited|Author|Pinned|Verified|Liked by author|View (all )?(\d+ )?(more )?repl(y|ies)( \(\d+\))?|Hide (all )?repl(y|ies)|[\d.,KM]+\s+likes?|\d+\s*[smhdwy]|now)$/i;
+  function profileLink(a) {
+    var h = (a.getAttribute('href') || '').replace(/^https?:\/\/(www\.)?instagram\.com/i, '');
+    return /^\/[\w.]+\/?$/.test(h);
+  }
+  // Who wrote a comment: its <h3> in the desktop layout, else the first named link to a profile
+  // (the layout NinjaView's page sometimes gets has no <h3>).
+  function commentAuthor(box) {
+    var h3 = q('h3', box);
+    if (h3) return { el: h3, name: text(q('a', h3)) || text(h3) };
+    var link = qa('a[href]', box).filter(function (a) { var t = text(a); return t && t.charAt(0) !== '@' && profileLink(a); })[0];
+    return { el: link || null, name: link ? text(link) : '' };
+  }
+  // An element's text without what isn't the comment: the author's name, the time link, buttons,
+  // and the row of likes and Reply. Line breaks are kept.
+  function ownText(el, author) {
+    var copy = el.cloneNode(true);
+    qa('h3, button, [role="button"], span[dir="ltr"], a[href*="/c/"]', copy).forEach(function (n) { n.remove(); });
+    if (author) qa('a', copy).forEach(function (a) { if (text(a) === author) a.remove(); });
+    qa('br', copy).forEach(function (br) { br.replaceWith('\n'); });
+    return String(copy.textContent || '').replace(/[ \t]+/g, ' ').replace(/\n{3,}/g, '\n\n').trim();
+  }
+  // A comment's text: the first text block that isn't its author, a control's label or a label.
+  function commentText(box, who) {
+    var blocks = qa('span[dir="auto"], div[dir="auto"]', box);
+    for (var i = 0; i < blocks.length; i++) {
+      var b = blocks[i];
+      if (who.el && who.el.contains(b)) continue;                       // the name itself
+      var control = b.closest('button');
+      if (control && box.contains(control)) continue;                   // "Hide all replies", "View all 2 replies"
+      if (b.closest('span[dir="ltr"]')) continue;                       // the time, likes and Reply row
+      var t = ownText(b, who.name);
+      if (!t || t === who.name || COMMENT_LABEL.test(t)) continue;
+      return t;
+    }
+    return '';
+  }
+  function readComments(root, boxes) {
     var out = [], seen = {}, times = commentTimes(root), under = new Map();
     times.forEach(function (t) {
       for (var n = t.parentElement; n && n !== root; n = n.parentElement) under.set(n, (under.get(n) || 0) + 1);
@@ -398,20 +436,22 @@ enum IGSessionAssets {
       seen[id] = true;
       var box = a;
       while (box.parentElement && box.parentElement !== root && under.get(box.parentElement) === 1) box = box.parentElement;
-      var h3 = q('h3', box);
-      var author = h3 ? text(q('a', h3)) || text(h3) : '';
-      var body = qa('span[dir="auto"]', box).filter(function (s) { return !(h3 && h3.contains(s)) && !s.closest('span[dir="ltr"]'); })[0];
+      if (boxes) boxes.set(id, box);
+      var who = commentAuthor(box);
       var likeBtn = qa('button, [role="button"]', box).map(text).filter(function (s) { return /^[\d.,KM]+\s+likes?$/i.test(s); })[0];
       var avatar = q('img[alt$="profile picture"]', box);
       var sticker = qa('img', box).filter(function (i) { return !/profile picture/i.test(i.alt || ''); })[0];   // GIF comments
-      out.push({ id: id, parent: parent, author: author, verified: !!(h3 && q('svg[aria-label="Verified"]', h3)),
-                 text: longText(body), time: t.getAttribute('datetime') || '', likes: likeBtn ? count(likeBtn) : 0,
+      var badge = who.el && (q('svg[aria-label="Verified"]', who.el) || (who.el.parentElement && q('svg[aria-label="Verified"]', who.el.parentElement)));
+      out.push({ id: id, parent: parent, author: who.name, verified: !!badge,
+                 text: commentText(box, who), time: t.getAttribute('datetime') || '', likes: likeBtn ? count(likeBtn) : 0,
                  avatar: imgURL(avatar), image: imgURL(sticker) });
     });
     return out;
   }
-  // Comments the API sent fill in what the page shows, and add any it hasn't drawn.
-  function mergeComments(list, code) {
+  // Instagram's own data is the truth for a comment's text, author and time; the page fills in what it
+  // lacks and adds comments it hasn't sent. `differs` collects comments whose page text read differently.
+  function squashText(t) { return String(t || '').replace(/\s+/g, ' ').trim(); }
+  function mergeComments(list, code, differs) {
     var byId = {};
     list.forEach(function (c) { byId[c.id] = c; });
     Object.keys(comments).map(function (k) { return comments[k]; })
@@ -420,9 +460,12 @@ enum IGSessionAssets {
       .forEach(function (c) {
         var d = byId[c.id];
         if (d) {
-          if (!d.author) d.author = c.author;
-          if (!d.text) d.text = c.text;
-          if (!d.time) d.time = c.time;
+          if (c.text) {
+            if (differs && d.text && squashText(d.text) !== squashText(c.text)) differs.push(c.id);
+            d.text = c.text;
+          }
+          if (c.author) d.author = c.author;
+          if (c.time) d.time = c.time;
           if (!d.avatar) d.avatar = c.avatar;
           if (!d.image) d.image = c.image;
           if (!d.parent && c.parent) d.parent = c.parent;
@@ -563,7 +606,9 @@ enum IGSessionAssets {
     var likesText = qa('a, span', root).filter(function (el) { return !el.closest('button') && !el.closest('li') && /^[\d.,KM]+\s+likes?$/i.test(text(el)); }).map(text)[0] || '';
     var authorLink = qa('header a[href]', root).filter(function (a) { return /^\/?[\w.]+\/?$/.test((a.getAttribute('href') || '').replace(/^https:\/\/www\.instagram\.com/, '')) && text(a); })[0];
     var useNet = !!(net && net.items.length);
-    var list = opts.comments === false ? [] : mergeComments(readComments(root), code);
+    var boxes = new Map(), differs = [];
+    var list = opts.comments === false ? [] : mergeComments(readComments(root, boxes), code, differs);
+    var sample = differs.length && boxes.get(differs[0]) ? markup(boxes.get(differs[0])) : '';
     // Instagram's own count for the post (the number its grid shows on hover), to check against.
     var expected = (net && net.comments) || opts.expected || 0;
     return {
@@ -574,7 +619,7 @@ enum IGSessionAssets {
       media: useNet ? net.items.map(function (x) { return { image: x.image, video: x.video, alt: x.alt, width: x.width, height: x.height }; }) : found,
       mediaFrom: useNet ? 'network' : 'page',
       comments: list, expandRounds: ex.rounds,
-      expected: expected, exhausted: ex.exhausted,
+      expected: expected, exhausted: ex.exhausted, pageTextDiffers: differs.length, markupSample: sample,
       complete: opts.comments !== false && ex.exhausted && (!expected || list.length >= expected)
     };
   }
@@ -583,6 +628,11 @@ enum IGSessionAssets {
     var root = postRoot(), code = currentCode(root), net = media[code];
     var list = mergeComments(readComments(root), code);
     return { comments: list, expected: (net && net.comments) || 0, found: list.length };
+  }
+  // A comment's markup for the debug log, without classes, styles, image URLs or icon paths.
+  function markup(el) {
+    return el.outerHTML.replace(/\s(class|style|data-[\w-]+|srcset|src|crossorigin|draggable|tabindex|width|height)="[^"]*"/g, '')
+      .replace(/<svg[\s\S]*?<\/svg>/g, '<svg/>').replace(/<canvas[\s\S]*?<\/canvas>/g, '').slice(0, 700);
   }
   function probe() {
     var r = postRoot();

@@ -172,6 +172,9 @@ final class IGSession: ObservableObject, PageBridgeDelegate {
                 let how: String
                 if detail.foundAll { how = "all of them" } else if detail.exhausted == true { how = "nothing more would open" } else { how = "stopped early" }
                 DebugLog.shared.add(.web, "Instagram post \(code): \(found) comments, \(how)")
+                if let differs = detail.pageTextDiffers, differs > 0 {
+                    DebugLog.shared.warn(.web, "Instagram post \(code): \(differs) comment\(differs == 1 ? "" : "s") read differently from the page than from Instagram's data; Instagram's was used. Page markup: \(detail.markupSample ?? "")")
+                }
             }
             return detail
         } catch {

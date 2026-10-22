@@ -97,6 +97,10 @@ struct IGPostDetail: Codable {
     var exhausted: Bool? = nil
     /// Nothing was left to open and at least `expected` comments were read.
     var complete: Bool? = nil
+    /// Comments whose text on the page differed from Instagram's own data (Instagram's was used).
+    var pageTextDiffers: Int? = nil
+    /// The first such comment's markup, without classes or image URLs, for the debug log.
+    var markupSample: String? = nil
 
     var foundAll: Bool { complete == true }
 }

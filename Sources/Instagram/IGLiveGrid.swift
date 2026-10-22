@@ -487,10 +487,6 @@ struct IGLiveCommentRow: View {
                 if let gif = comment.image.flatMap({ URL.remote($0) }) {
                     RemoteImage(gif, maxPixel: 400, mode: .fit, placeholder: .clear)
                         .frame(maxWidth: 140, maxHeight: 140, alignment: .leading)
-                } else if comment.text.isEmpty {
-                    Text("GIF")
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(Color.nvMuted)
                 }
                 if comment.likes > 0 {
                     Text(comment.likes == 1 ? "1 like" : "\(comment.likes.formatted()) likes")

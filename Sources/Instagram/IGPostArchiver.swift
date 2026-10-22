@@ -64,7 +64,7 @@ final class IGPostArchiver: ObservableObject {
         // Skip posts whose comments are all saved; the rest are opened again (their media is kept, only
         // comments are fetched), newest first.
         let existing = IGArchive.shared.account(handle)
-        let savedComplete = Set((existing?.posts ?? []).filter(\.commentsComplete).map(\.key))
+        let savedComplete = Set((existing?.posts ?? []).filter { $0.commentsComplete && !$0.hasMisreadComments }.map(\.key))
         let wanted = grid.items.filter { !savedComplete.contains($0.code) }
         total = wanted.count
 
