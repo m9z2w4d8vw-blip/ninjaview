@@ -36,12 +36,6 @@ final class AppSettings: ObservableObject {
         didSet { UserDefaults.standard.set(saveLists, forKey: Keys.saveLists) }
     }
 
-    /// When on, Instagram posts are read from insta-stories-viewer.com (newest ~12, no sign-in).
-    /// Off by default: posts come from a signed-in Instagram session (full history + comments).
-    @Published var viewerPosts: Bool {
-        didSet { UserDefaults.standard.set(viewerPosts, forKey: Keys.viewerPosts) }
-    }
-
     private enum Keys {
         static let appearance = "appearance"
         static let keepHistory = "keepHistory"
@@ -50,14 +44,12 @@ final class AppSettings: ObservableObject {
         static let prefetch = "prefetch"
         static let saveComments = "saveComments"
         static let saveLists = "saveLists"
-        static let viewerPosts = "instagramViewerPosts"
     }
 
     private init() {
         let defaults = UserDefaults.standard
         defaults.register(defaults: [Keys.keepHistory: true, Keys.blockAds: true, Keys.cleanLayout: true,
-                                     Keys.prefetch: true, Keys.saveComments: true, Keys.saveLists: true,
-                                     Keys.viewerPosts: false])
+                                     Keys.prefetch: true, Keys.saveComments: true, Keys.saveLists: true])
         appearance = AppearanceMode(rawValue: defaults.string(forKey: Keys.appearance) ?? "") ?? .system
         keepHistory = defaults.bool(forKey: Keys.keepHistory)
         blockAds = defaults.bool(forKey: Keys.blockAds)
@@ -65,6 +57,5 @@ final class AppSettings: ObservableObject {
         prefetch = defaults.bool(forKey: Keys.prefetch)
         saveComments = defaults.bool(forKey: Keys.saveComments)
         saveLists = defaults.bool(forKey: Keys.saveLists)
-        viewerPosts = defaults.bool(forKey: Keys.viewerPosts)
     }
 }

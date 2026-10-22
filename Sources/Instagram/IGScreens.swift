@@ -9,8 +9,6 @@ struct IGProfileScreen: View {
     @ObservedObject private var archive = IGArchive.shared
     @ObservedObject private var watch = WatchCenter.shared
     @ObservedObject private var postArchiver = IGPostArchiver.shared
-    @ObservedObject private var settings = AppSettings.shared
-    @ObservedObject private var creds = IGCredentials.shared
     @EnvironmentObject private var app: AppModel
     @EnvironmentObject private var downloads: DownloadCenter
     @State private var viewer: IGViewerRequest? = nil
@@ -160,9 +158,9 @@ struct IGProfileScreen: View {
                 .disabled(true)
         } else {
             Menu {
-                Button { archiveNow(profile) } label: { Label(archive.has(profile.handle) ? "Update stories + visible posts" : "Archive stories + visible posts", systemImage: "archivebox") }
+                Button { archiveNow(profile) } label: { Label(archive.has(profile.handle) ? "Update stories" : "Archive stories", systemImage: "archivebox") }
                 if IGCredentials.shared.isSignedIn {
-                    Button { archiveAllPosts(profile.handle) } label: { Label("Archive all posts + comments (signed in)", systemImage: "square.grid.3x3") }
+                    Button { archiveAllPosts(profile.handle) } label: { Label("Archive all posts + comments", systemImage: "square.grid.3x3") }
                 }
             } label: {
                 Label(archive.has(profile.handle) ? "Update" : "Archive", systemImage: "archivebox")
@@ -241,106 +239,55 @@ struct IGProfileScreen: View {
         .padding(.top, 22)
     }
 
-    /// Posts come from a signed-in session by default (full history + comments). The viewer-site
-    /// grid (newest ~12) is only shown when its setting is on or there's no sign-in.
-    private var useViewerPosts: Bool { settings.viewerPosts || !creds.isSignedIn }
-
+    /// Posts always come from the signed-in Instagram session. The viewer site is never used.
     @ViewBuilder private var postsSection: some View {
+        let archivedCount = archive.account(handle)?.posts.count ?? 0
         VStack(alignment: .leading, spacing: 10) {
-            sectionTitle("Posts", count: engine.posts?.total ?? 0)
-            if useViewerPosts {
-                viewerPostsGrid
+            sectionTitle("Posts", count: archivedCount)
+            if let account = archive.account(handle), !account.posts.isEmpty {
+                LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 2), count: 3), spacing: 2) {
+                    ForEach(account.posts.prefix(18), id: \.id) { item in
+                        Button { app.openInstagramArchive(handle) } label: {
+                            IGCell(thumb: item.isVideo ? archive.fileURL(handle, item.cover) : archive.fileURL(handle, item.file),
+                                   isVideo: item.isVideo, label: item.comments.isEmpty ? "" : "\(item.comments.count) \u{1F4AC}")
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+                Button { app.openInstagramArchive(handle) } label: {
+                    Text(account.posts.count > 18 ? "See all \(account.posts.count) archived posts" : "Open archive")
+                        .font(.footnote.weight(.semibold))
+                        .foregroundStyle(Color.nvInk)
+                }
+                .padding(.horizontal, 16)
+                .padding(.top, 4)
             } else {
-                signedInPostsCallToAction
+                VStack(alignment: .leading, spacing: 10) {
+                    Text("Posts come from your signed-in Instagram, with full history and comments.")
+                        .font(.footnote)
+                        .foregroundStyle(Color.nvMuted)
+                    if postArchiver.isRunning(handle) {
+                        Text(postArchiver.status).font(.footnote).foregroundStyle(Color.nvInk)
+                        if postArchiver.total > 0 {
+                            ProgressView(value: Double(postArchiver.done), total: Double(postArchiver.total)).tint(Color.nvSignal)
+                        } else {
+                            ProgressView().tint(Color.nvSignal)
+                        }
+                    } else if IGCredentials.shared.isSignedIn {
+                        Button { archiveAllPosts(handle) } label: {
+                            Label("Archive all posts", systemImage: "square.grid.3x3")
+                        }
+                        .buttonStyle(InstaButtonStyle())
+                    } else {
+                        Text("Add your Instagram sign-in in Settings to archive posts.")
+                            .font(.caption)
+                            .foregroundStyle(Color.nvMuted)
+                    }
+                }
+                .padding(.horizontal, 16)
             }
         }
         .padding(.top, 24)
-    }
-
-    @ViewBuilder private var viewerPostsGrid: some View {
-        if let tab = engine.posts, !tab.items.isEmpty {
-            LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 2), count: 3), spacing: 2) {
-                ForEach(tab.items) { item in
-                    Button { openPosts(at: item.index) } label: {
-                        IGCell(thumb: item.thumbURL, isVideo: item.isVideo)
-                    }
-                    .buttonStyle(.plain)
-                }
-            }
-            if tab.items.count < tab.total {
-                morePosts(tab)
-            }
-        } else if engine.loadingPosts || engine.posts == nil {
-            ProgressView().padding(.horizontal, 16)
-        } else if let tab = engine.posts {
-            tabNote(tab, kind: .posts)
-        }
-    }
-
-    /// When signed in: either show the archived grid if posts are already saved, or offer to
-    /// archive them. Archiving opens each post for its media and full comments.
-    @ViewBuilder private var signedInPostsCallToAction: some View {
-        if let account = archive.account(handle), !account.posts.isEmpty {
-            LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 2), count: 3), spacing: 2) {
-                ForEach(account.posts.prefix(18), id: \.id) { item in
-                    Button { app.openInstagramArchive(handle) } label: {
-                        IGCell(thumb: item.isVideo ? archive.fileURL(handle, item.cover) : archive.fileURL(handle, item.file),
-                               isVideo: item.isVideo, label: item.comments.isEmpty ? "" : "\(item.comments.count) \u{1F4AC}")
-                    }
-                    .buttonStyle(.plain)
-                }
-            }
-            Button { app.openInstagramArchive(handle) } label: {
-                Text(account.posts.count > 18 ? "See all \(account.posts.count) archived posts" : "Open archive")
-                    .font(.footnote.weight(.semibold))
-                    .foregroundStyle(Color.nvInk)
-            }
-            .padding(.horizontal, 16)
-            .padding(.top, 4)
-        } else {
-            VStack(alignment: .leading, spacing: 10) {
-                Text("Posts are archived from your signed-in Instagram, with full history and comments.")
-                    .font(.footnote)
-                    .foregroundStyle(Color.nvMuted)
-                if postArchiver.isRunning(handle) {
-                    Text(postArchiver.status).font(.footnote).foregroundStyle(Color.nvInk)
-                    if postArchiver.total > 0 {
-                        ProgressView(value: Double(postArchiver.done), total: Double(postArchiver.total)).tint(Color.nvSignal)
-                    } else {
-                        ProgressView().tint(Color.nvSignal)
-                    }
-                } else {
-                    Button { archiveAllPosts(handle) } label: {
-                        Label("Archive all posts", systemImage: "square.grid.3x3")
-                    }
-                    .buttonStyle(InstaButtonStyle())
-                }
-                Button { settings.viewerPosts = true; Task { await engine.loadViewerPosts() } } label: {
-                    Text("Just preview recent posts instead").font(.caption).foregroundStyle(Color.nvSignal)
-                }
-            }
-            .padding(.horizontal, 16)
-        }
-    }
-
-    @ViewBuilder private func morePosts(_ tab: IGTab) -> some View {
-        if engine.loadingMore {
-            ProgressView()
-                .frame(maxWidth: .infinity)
-                .padding(.top, 12)
-        } else if engine.noMorePosts {
-            Text("The site lists the newest \(tab.items.count) of \(tab.total) posts.")
-                .font(.footnote)
-                .foregroundStyle(Color.nvMuted)
-                .padding(.horizontal, 16)
-                .padding(.top, 10)
-        } else {
-            Button("Show more posts") { Task { await engine.loadMorePosts() } }
-                .font(.footnote.weight(.semibold))
-                .foregroundStyle(Color.nvInk)
-                .frame(maxWidth: .infinity)
-                .padding(.top, 12)
-        }
     }
 
     private func sectionTitle(_ title: String, count: Int) -> some View {
@@ -402,21 +349,14 @@ struct IGProfileScreen: View {
         viewer = IGViewerRequest.live(items, handle: handle, stories: true, start: index)
     }
 
-    private func openPosts(at index: Int) {
-        guard let items = engine.posts?.items, !items.isEmpty else { return }
-        viewer = IGViewerRequest.live(items, handle: handle, stories: false, start: index)
-    }
-
     private func archiveNow(_ profile: IGProfile) {
         Task {
-            if engine.posts == nil { await engine.readTab(.posts) }
             let stories = engine.stories?.items ?? []
-            let posts = engine.posts?.items ?? []
-            if stories.isEmpty && posts.isEmpty {
-                downloads.show(.failure, "Nothing to save yet. Pull to refresh, then try again.")
+            if stories.isEmpty {
+                downloads.show(.failure, "No stories to save yet. Pull to refresh, then try again.")
                 return
             }
-            let saved = await archive.absorb(profile, stories: stories, posts: posts)
+            let saved = await archive.absorb(profile, stories: stories, posts: [])
             downloads.show(.success, saved > 0 ? "Saved \(saved) to @\(profile.handle)'s archive" : "@\(profile.handle)'s archive is up to date")
             UIImpactFeedbackGenerator(style: .light).impactOccurred()
         }

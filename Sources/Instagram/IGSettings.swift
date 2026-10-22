@@ -7,7 +7,6 @@ import WebKit
 /// posts and comments. Stories never use it.
 struct IGSettingsSection: View {
     @ObservedObject private var creds = IGCredentials.shared
-    @ObservedObject private var settings = AppSettings.shared
     @State private var signInOpen = false
     @State private var pageOpen = false
 
@@ -23,7 +22,6 @@ struct IGSettingsSection: View {
             } else {
                 Button("Sign in to Instagram") { signInOpen = true }
             }
-            Toggle("Preview posts without signing in", isOn: $settings.viewerPosts)
         } header: {
             Text("Instagram sign-in")
         } footer: {
@@ -34,11 +32,10 @@ struct IGSettingsSection: View {
     }
 
     private var signedOutFooter: String {
-        let preview = " \u{201C}Preview posts without signing in\u{201D} shows an account's newest posts (about 12) from insta-stories-viewer.com without a sign-in; leave it off to use your signed-in Instagram for posts instead. Stories always come from insta-stories-viewer.com either way."
         if creds.isSignedIn {
-            return "Posts are archived from your signed-in Instagram, with full history and comments. That account is no longer anonymous while signed in, and it's used only for posts and comments \u{2014} never for stories or highlights. Use a throwaway account: automating a real one can get it rate-limited or flagged. Your password is kept in this iPhone's Keychain." + preview
+            return "Posts are archived from your signed-in Instagram, with full history and comments. That account is no longer anonymous while signed in, and it's used only for posts and comments \u{2014} never for stories or highlights. Use a throwaway account: automating a real one can get it rate-limited or flagged. Your password is kept in this iPhone's Keychain. Stories always come from insta-stories-viewer.com anonymously."
         }
-        return "Sign in to archive a full post history with comments from Instagram directly. Use a throwaway account, since automating a real one risks it being rate-limited or flagged. The password is stored only in this iPhone's Keychain, and stories never use the sign-in." + preview
+        return "Sign in to archive a full post history with comments from Instagram directly. Use a throwaway account, since automating a real one risks it being rate-limited or flagged. The password is stored only in this iPhone's Keychain. Stories always come from insta-stories-viewer.com anonymously; posts need a sign-in."
     }
 }
 

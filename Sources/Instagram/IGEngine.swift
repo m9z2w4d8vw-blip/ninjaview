@@ -74,16 +74,12 @@ final class IGEngine: ObservableObject, PageBridgeDelegate {
 
     private func readEverything() async {
         guard let header = await readProfile(), !header.isPrivate else { return }
+        // Stories only from the viewer site. Posts always come from the signed-in session.
         await readTab(.stories)
-        // Posts from the viewer site are a fallback: only when the setting is on, or when there's
-        // no Instagram sign-in to read them properly. Otherwise the signed-in archiver handles posts.
-        if AppSettings.shared.viewerPosts || !IGCredentials.shared.isSignedIn {
-            await readTab(.posts)
-        }
     }
 
-    /// Loads the viewer-site posts tab on demand (when the person taps "Show posts from the viewer").
-    func loadViewerPosts() async { await readTab(.posts) }
+    /// No-op: posts are no longer loaded from the viewer site.
+    func loadViewerPosts() async { }
 
     /// Waits for the page and reads the header. Returns it when the account is readable
     /// (public or private); otherwise sets `phase` to say why not.

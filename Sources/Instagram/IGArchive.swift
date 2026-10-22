@@ -216,9 +216,8 @@ final class IGArchive: ObservableObject {
         }
         progress[key] = "Reading stories"
         let stories = await engine.readTab(.stories)
-        progress[key] = "Reading posts"
-        let posts = await engine.readTab(.posts)
-        let saved = await store(profile, stories: stories?.items ?? [], posts: posts?.items ?? [])
+        // Posts are never read from the viewer site; they come only from the signed-in session.
+        let saved = await store(profile, stories: stories?.items ?? [], posts: [])
         return saved == 0 ? "@\(handle) is up to date." : "Saved \(saved) new from @\(handle)."
     }
 

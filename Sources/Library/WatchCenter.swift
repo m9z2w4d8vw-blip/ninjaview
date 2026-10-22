@@ -59,9 +59,11 @@ enum Activity: String, CaseIterable, Codable, Identifiable {
         }
     }
 
-    /// What each site can notify about: Instagram has no reposts tab.
+    /// What each site can notify about.
+    /// Instagram post notifications are not available: posts come only from the signed-in
+    /// session, which the background watcher does not use. Only story notifications work.
     static func kinds(for platform: Platform) -> [Activity] {
-        platform == .instagram ? [.video, .story] : allCases
+        platform == .instagram ? [.story] : allCases
     }
 
     /// "Posts, Stories and Reposts", in tab order.
@@ -543,25 +545,24 @@ final class WatchCenter: ObservableObject {
             return reading
         }
         var stories: [IGItem] = []
-        var posts: [IGItem] = []
-        for kind in kinds {
+        // Posts are no longer read from the viewer site; only stories are watched here.
+        for kind in kinds where kind == .story {
             if Task.isCancelled || Date() > deadline { break }
-            let tabKind: IGKind = kind == .story ? .stories : .posts
             let left = max(6, min(25, deadline.timeIntervalSinceNow - 1))
-            guard let tab = await engine.readTab(tabKind, timeout: left) else { continue }
+            guard let tab = await engine.readTab(.stories, timeout: left) else { continue }
             if tab.isClean {
                 reading.current[kind] = tab.items.map(\.key)
-                if kind == .story { stories = tab.items } else { posts = tab.items }
+                stories = tab.items
             } else {
-                DebugLog.shared.warn(.watch, "@\(handle) on Instagram, \(kind.title.lowercased()) not used this time: \(tab.message.isEmpty ? tab.status : tab.message)")
+                DebugLog.shared.warn(.watch, "@\(handle) on Instagram, stories not used this time: \(tab.message.isEmpty ? tab.status : tab.message)")
                 if tab.status == "captcha" || Self.isRefusal(tab.message) {
                     reading.refused = true
                     break
                 }
             }
         }
-        if IGArchive.shared.has(handle), !(stories.isEmpty && posts.isEmpty) {
-            await IGArchive.shared.absorb(profile, stories: stories, posts: posts)
+        if IGArchive.shared.has(handle), !stories.isEmpty {
+            await IGArchive.shared.absorb(profile, stories: stories, posts: [])
         }
         return reading
     }
