@@ -1,3 +1,4 @@
+import CoreGraphics
 import Foundation
 
 /// Whether instagram.com shows us as signed in, at a login form, or at a checkpoint.
@@ -10,7 +11,7 @@ struct IGLoginState: Codable {
     let error: String
 }
 
-/// One square on the profile grid.
+/// One tile on the profile grid.
 struct IGGridItem: Codable, Hashable, Identifiable {
     var id: String { code }
     let code: String
@@ -19,6 +20,17 @@ struct IGGridItem: Codable, Hashable, Identifiable {
     let pinned: Bool
     let multi: Bool
     let video: Bool
+    /// From Instagram's own data when the grid saw it (nil or empty when only the page's tile was seen).
+    var media: [IGMedia]? = nil
+    var caption: String? = nil
+    var likes: Int? = nil
+    var comments: Int? = nil
+    /// When the post was shared, in seconds since 1970 (0 when unknown).
+    var taken: Double? = nil
+
+    var thumbURL: URL? { URL.remote(thumb) }
+    var slides: [IGMedia] { media ?? [] }
+    var takenDate: Date? { (taken ?? 0) > 0 ? Date(timeIntervalSince1970: taken ?? 0) : nil }
 }
 
 /// The whole grid after scrolling to the end.
@@ -29,6 +41,8 @@ struct IGGrid: Codable {
     let ended: Bool
     let rounds: Int
     let reason: String
+    /// The profile's display name from Instagram's data ("" or nil when it wasn't there).
+    var name: String? = nil
 }
 
 /// One image or video within a post.
@@ -36,8 +50,16 @@ struct IGMedia: Codable, Hashable {
     let image: String
     let video: String
     let alt: String
+    /// The original size, when Instagram said (0 or nil when unknown).
+    var width: Int? = nil
+    var height: Int? = nil
 
     var isVideo: Bool { !video.isEmpty }
+    /// Width over height, or nil when the size isn't known.
+    var aspect: CGFloat? {
+        guard let w = width, let h = height, w > 0, h > 0 else { return nil }
+        return CGFloat(w) / CGFloat(h)
+    }
     var mediaURL: URL? { URL.remote(isVideo ? video : image) }
     var posterURL: URL? { image.isEmpty ? nil : URL.remote(image) }
 }
@@ -53,6 +75,8 @@ struct IGComment: Codable, Hashable {
     let time: String
     let likes: Int
     let avatar: String
+    /// A GIF or sticker comment's image ("" or nil for text comments).
+    var image: String? = nil
 }
 
 /// Everything read from one open post.

@@ -79,10 +79,16 @@ final class IGPostArchiver: ObservableObject {
             if cancelled || Task.isCancelled { break }
             done = index
             status = "Saving post \(index + 1) of \(wanted.count)"
-            guard let detail = await session.readPost(item.code) else {
+            guard var detail = await session.readPost(item.code) else {
                 failed += 1
                 if await sessionBlocked(session) { break }
                 continue
+            }
+            // The grid already has every slide from Instagram's data when the page showed none.
+            if detail.media.isEmpty, !item.slides.isEmpty {
+                detail = IGPostDetail(code: detail.code, author: detail.author, caption: detail.caption.isEmpty ? (item.caption ?? "") : detail.caption,
+                                      date: detail.date, likes: detail.likes, media: item.slides, mediaFrom: "grid",
+                                      comments: detail.comments, expandRounds: detail.expandRounds)
             }
             let ok = await IGArchive.shared.absorbSignedInPost(handle, grid: item, detail: detail, profileTotal: grid.total)
             if ok { saved += 1 } else { failed += 1 }

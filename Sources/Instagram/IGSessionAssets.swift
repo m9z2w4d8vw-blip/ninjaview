@@ -1,9 +1,11 @@
 import Foundation
 
 /// The signed-in Instagram engine, injected into instagram.com at document start so its
-/// story/highlight guard is in place before the page runs. Byte-identical to the tested
-/// igsession.js (see the README). It reads posts and comments only and refuses every
-/// story and highlight click, request and navigation.
+/// story/highlight guard is in place before the page runs. It reads posts and comments from
+/// Instagram's own data (its API answers and the JSON embedded in each page) first, and from the
+/// page's markup as a fallback. Tested in Chromium against saved desktop instagram.com pages (a
+/// signed-in profile grid and a post with its comments, before and after opening replies).
+/// It refuses every story and highlight click, request and navigation.
 enum IGSessionAssets {
     static let engineJS = #"""
 /* NinjaView signed-in Instagram engine: posts and comments only.
@@ -45,7 +47,12 @@ enum IGSessionAssets {
   XMLHttpRequest.prototype.send = function (body) {
     if (isStoryRequest(this.__iglUrl, body)) { note('xhr ' + String(this.__iglUrl).slice(0, 120)); try { this.abort(); } catch (e) {} return; }
     var xhr = this;
-    xhr.addEventListener('load', function () { try { if (/json|javascript/.test(xhr.getResponseHeader('content-type') || '')) walk(JSON.parse(xhr.responseText.replace(/^for \(;;\);/, ''))); } catch (e) {} });
+    xhr.addEventListener('load', function () {
+      try {
+        var api = /graphql|\/api\/v1\//.test(String(xhr.__iglUrl || ''));
+        if ((api || /json|javascript/.test(xhr.getResponseHeader('content-type') || '')) && (xhr.responseType === '' || xhr.responseType === 'text')) ingest(xhr.responseText);
+      } catch (e) {}
+    });
     return XS.apply(this, arguments);
   };
   ['pushState', 'replaceState'].forEach(function (k) {
@@ -72,32 +79,122 @@ enum IGSessionAssets {
     }, true);
   });
 
-  // ---------- Media the page itself loads (real video URLs, full-size images) ----------
-  var media = {};
+  // ---------- Instagram's own data: its API answers and the JSON embedded in each page ----------
+  // Posts and comments are read from here first; the page's markup is only a fallback.
+  var media = {};      // post code -> what Instagram says about the post
+  var comments = {};   // comment id -> comment
+  var seq = 0, cseq = 0;
+  function area(c) { return (c.width || 0) * (c.height || 0); }
   function best(list) {
     var top = null;
-    (list || []).forEach(function (c) { if (c && c.url && (!top || (c.width || 0) * (c.height || 0) > (top.width || 0) * (top.height || 0))) top = c; });
+    (list || []).forEach(function (c) { if (c && c.url && (!top || area(c) > area(top))) top = c; });
     return top;
   }
-  function mediaItem(n) {
-    var img = best(n.image_versions2 && n.image_versions2.candidates), vid = best(n.video_versions);
-    return { image: img ? img.url : '', video: vid ? vid.url : '' };
+  // A grid-sized copy: the smallest one at least 480 wide, else the biggest there is.
+  function gridSize(list) {
+    var pick = null;
+    (list || []).forEach(function (c) { if (c && c.url && (c.width || 0) >= 480 && (!pick || c.width < pick.width)) pick = c; });
+    return pick || best(list);
   }
-  function walk(o, depth) {
-    if (!o || typeof o !== 'object' || (depth = depth || 0) > 40) return;
-    if (Array.isArray(o)) { for (var i = 0; i < o.length; i++) walk(o[i], depth + 1); return; }
-    if (typeof o.code === 'string' && (o.image_versions2 || o.carousel_media || o.video_versions)) {
-      var items = o.carousel_media && o.carousel_media.length ? o.carousel_media.map(mediaItem) : [mediaItem(o)];
-      media[o.code] = { taken: o.taken_at || 0, caption: (o.caption && o.caption.text) || '', likes: o.like_count || 0,
-                        comments: o.comment_count || 0, items: items.filter(function (x) { return x.image || x.video; }) };
+  function mediaItem(n) {
+    var cands = n.image_versions2 && n.image_versions2.candidates;
+    var img = best(cands), vid = best(n.video_versions), small = gridSize(cands);
+    return { image: img ? img.url : '', video: vid ? vid.url : '', thumb: small ? small.url : '',
+             alt: typeof n.accessibility_caption === 'string' ? n.accessibility_caption : '',
+             width: n.original_width || (img && img.width) || 0, height: n.original_height || (img && img.height) || 0 };
+  }
+  function username(u) { return u && typeof u.username === 'string' ? u.username.toLowerCase() : ''; }
+  function fullName(u) { return u && typeof u.full_name === 'string' ? u.full_name : ''; }
+  function addPost(o) {
+    var prev = media[o.code] || {};
+    var kids = o.carousel_media && o.carousel_media.length ? o.carousel_media : [o];
+    var items = kids.map(mediaItem).filter(function (x) { return x.image || x.video; });
+    media[o.code] = {
+      order: prev.order !== undefined ? prev.order : seq++,
+      taken: o.taken_at || prev.taken || 0,
+      caption: o.caption && typeof o.caption.text === 'string' ? o.caption.text : (prev.caption || ''),
+      likes: typeof o.like_count === 'number' ? o.like_count : (prev.likes || 0),
+      comments: typeof o.comment_count === 'number' ? o.comment_count : (prev.comments || 0),
+      pinned: !!(o.timeline_pinned_user_ids && o.timeline_pinned_user_ids.length) || !!prev.pinned,
+      carousel: o.media_type === 8 || kids.length > 1 || !!prev.carousel,
+      video: o.media_type === 2 || o.product_type === 'clips' || !!prev.video,
+      reel: o.product_type === 'clips' || !!prev.reel,
+      owner: username(o.user) || username(o.owner) || prev.owner || '',
+      ownerName: fullName(o.user) || fullName(o.owner) || prev.ownerName || '',
+      coauthors: (o.coauthor_producers || []).map(username).concat(prev.coauthors || []),
+      items: items.length ? items : (prev.items || [])
+    };
+  }
+  function isComment(o) {
+    return typeof o.text === 'string' && typeof o.created_at === 'number' && !!(o.pk || o.id) &&
+           !!o.user && typeof o.user.username === 'string' &&
+           ('comment_like_count' in o || 'child_comment_count' in o || 'parent_comment_id' in o || o.__typename === 'XDTCommentDict');
+  }
+  function firstURL(o, depth) {
+    if (!o || typeof o !== 'object' || depth > 6) return '';
+    if (typeof o.url === 'string' && /^https?:/.test(o.url)) return o.url;
+    for (var k in o) { var u = firstURL(o[k], depth + 1); if (u) return u; }
+    return '';
+  }
+  function addComment(o, inPost) {
+    var id = String(o.pk || o.id), prev = comments[id] || {};
+    comments[id] = {
+      id: id, parent: o.parent_comment_id ? String(o.parent_comment_id) : (prev.parent || ''),
+      author: o.user.username, verified: !!o.user.is_verified, text: o.text,
+      time: new Date(o.created_at * 1000).toISOString(),
+      likes: typeof o.comment_like_count === 'number' ? o.comment_like_count : (prev.likes || 0),
+      avatar: o.user.profile_pic_url || prev.avatar || '', image: firstURL(o.giphy_media_info, 0) || prev.image || '',
+      post: inPost || prev.post || '',
+      order: prev.order !== undefined ? prev.order : cseq++
+    };
+  }
+  var IN_CAROUSEL = 1, IN_CAPTION = 2;
+  function walk(o, depth, flags, inPost) {
+    if (!o || typeof o !== 'object' || depth > 60) return;
+    if (Array.isArray(o)) { for (var i = 0; i < o.length; i++) walk(o[i], depth + 1, flags, inPost); return; }
+    // A carousel's slides carry codes of their own, but each is part of its post, never a post itself.
+    if (!(flags & IN_CAROUSEL) && typeof o.code === 'string' && o.code && !o.carousel_parent_id &&
+        (o.image_versions2 || o.carousel_media || o.video_versions)) {
+      addPost(o);
+      inPost = o.code;
+    } else if (!(flags & IN_CAPTION) && isComment(o)) {
+      addComment(o, inPost);
     }
-    for (var k in o) if (o.hasOwnProperty(k) && o[k] && typeof o[k] === 'object') walk(o[k], depth + 1);
+    for (var k in o) {
+      if (!Object.prototype.hasOwnProperty.call(o, k)) continue;
+      var v = o[k];
+      if (!v || typeof v !== 'object') continue;
+      var f = flags;
+      if (k === 'carousel_media') f |= IN_CAROUSEL;
+      if (k === 'caption' || k === 'edge_media_to_caption') f |= IN_CAPTION;
+      walk(v, depth + 1, f, inPost);
+    }
+  }
+  function ingest(t) {
+    if (typeof t !== 'string' || t.length < 2) return;
+    t = t.replace(/^for \(;;\);/, '');
+    try { walk(JSON.parse(t), 0, 0, ''); return; } catch (e) {}
+    // Streamed GraphQL answers arrive as several JSON documents, one per line.
+    t.split(/\r?\n/).forEach(function (line) {
+      if (line.charAt(0) !== '{') return;
+      try { walk(JSON.parse(line), 0, 0, ''); } catch (e) {}
+    });
   }
   function capture(url, res) {
     try {
       if (!/graphql|\/api\/v1\//.test(url)) return;
-      res.clone().text().then(function (t) { try { walk(JSON.parse(t.replace(/^for \(;;\);/, ''))); } catch (e) {} });
+      res.clone().text().then(ingest, function () {});
     } catch (e) {}
+  }
+  // The first batch of a grid, and a post's first comments, come inside the page rather than from a request.
+  var readScripts = new WeakSet();
+  function readEmbedded() {
+    qa('script[type="application/json"]').forEach(function (s) {
+      if (readScripts.has(s)) return;
+      readScripts.add(s);
+      var t = s.textContent || '';
+      if (t.length > 40 && /image_versions2|carousel_media|comment_like_count|child_comment_count/.test(t)) ingest(t);
+    });
   }
 
   // ---------- Helpers ----------
@@ -123,10 +220,19 @@ enum IGSessionAssets {
     var src = top || img.currentSrc || img.getAttribute('src') || '';
     return /^https?:/i.test(src) ? src : '';
   }
+  // A control's name: its own aria-label, else the label of the icon inside it ("Load more comments" is an icon).
+  function labelOf(el) {
+    var own = el.getAttribute('aria-label') || '';
+    if (own) return own;
+    var icon = el.querySelector('svg[aria-label]');
+    return icon ? icon.getAttribute('aria-label') || '' : '';
+  }
+  // Matching controls, innermost only, so a click lands on the real button rather than a wrapper around it.
   function button(re, root) {
-    return qa('button, [role="button"]', root || document).filter(function (b) {
-      return visible(b) && (re.test(b.getAttribute('aria-label') || '') || re.test(text(b))) && !storyTarget(b);
+    var hits = qa('button, [role="button"]', root || document).filter(function (b) {
+      return visible(b) && (re.test(labelOf(b)) || re.test(text(b))) && !storyTarget(b);
     });
+    return hits.filter(function (b) { return !hits.some(function (o) { return o !== b && b.contains(o); }); });
   }
   function codeFrom(href) { var m = String(href || '').match(/\/(p|reel|tv)\/([\w-]+)/); return m ? { kind: m[1], code: m[2] } : null; }
 
@@ -179,36 +285,46 @@ enum IGSessionAssets {
   }
 
   // ---------- Profile grid: scroll to the very end ----------
-
-  // NOTE: CDN URL → shortcode decoding was removed.
-  // The numeric ID in a CDN URL is the PHOTO/VIDEO FILE ID, not the POST shortcode.
-  // Decoding it produced wrong codes that showed carousel photos as fake duplicate posts
-  // and caused "not found" errors when opening them.
-
+  function profileHandle() {
+    var first = (location.pathname.split('/').filter(Boolean)[0] || '').toLowerCase();
+    return /^(p|reel|reels|tv|explore|accounts|direct|stories)$/.test(first) ? '' : first;
+  }
+  function addTile(found, a) {
+    if (a.closest('[role="dialog"]')) return;
+    var c = codeFrom(a.getAttribute('href'));
+    if (!c) return;
+    var e = found.get(c.code) || { code: c.code, kind: c.kind, thumb: '', pinned: false, multi: false, video: false };
+    var icons = qa('svg[aria-label]', a).map(function (s) { return s.getAttribute('aria-label') || ''; }).join('|');
+    if (/pinned/i.test(icons)) e.pinned = true;
+    if (/carousel/i.test(icons)) e.multi = true;
+    if (/\b(clip|reel|video)\b/i.test(icons)) e.video = true;
+    if (!e.thumb) e.thumb = imgURL(q('img', a));
+    found.set(c.code, e);
+  }
+  // Tiles first, in the order the grid draws them (pinned posts, then newest), then any posts
+  // Instagram has sent that the grid hasn't drawn yet, in the order it sent them.
   function gridCodes(found) {
-    // Primary source: walk()-intercepted GraphQL API responses.
-    // These carry the real post shortcode (o.code) and full media URLs.
-    for (var code in media) {
-      if (!found.has(code)) {
-        var m = media[code];
-        var items = m.items || [];
-        found.set(code, { code: code,
-          kind: items.some(function (i) { return !!i.video; }) ? 'reel' : 'p',
-          thumb: items[0] ? (items[0].image || '') : '',
-          pinned: false, multi: items.length > 1,
-          video: items.some(function (i) { return !!i.video; }) });
-      }
-    }
-    // Legacy fallback: old Instagram used href="/p/CODE/" on grid anchors.
-    qa('main a[href]').forEach(function (a) {
-      if (a.closest('[role="dialog"]')) return;
-      var c = codeFrom(a.getAttribute('href'));
-      if (!c || found.has(c.code)) return;
-      found.set(c.code, { code: c.code, kind: c.kind, thumb: imgURL(q('img', a)),
-        pinned: !!q('svg[aria-label*="Pinned"]', a), multi: !!q('svg[aria-label="Carousel"]', a),
-        video: !!q('svg[aria-label="Clip"], svg[aria-label="Reel"], svg[aria-label="Video"]', a) });
+    qa('main a[href]').forEach(function (a) { addTile(found, a); });
+    var handle = profileHandle();
+    Object.keys(media).sort(function (x, y) { return media[x].order - media[y].order; }).forEach(function (code) {
+      var m = media[code];
+      if (handle && m.owner && m.owner !== handle && m.coauthors.indexOf(handle) < 0) return;   // someone else's post
+      if (!found.has(code)) found.set(code, { code: code, kind: m.reel ? 'reel' : 'p', thumb: '', pinned: false, multi: false, video: false });
     });
     return found;
+  }
+  function finishTile(e) {
+    var m = media[e.code];
+    var out = { code: e.code, kind: e.kind, thumb: e.thumb, pinned: e.pinned, multi: e.multi, video: e.video,
+                media: [], caption: '', likes: 0, comments: 0, taken: 0 };
+    if (!m) return out;
+    out.pinned = out.pinned || m.pinned;
+    out.multi = out.multi || m.carousel;
+    out.video = !out.multi && (out.video || m.video);
+    if (m.items.length) out.thumb = m.items[0].thumb || m.items[0].image || out.thumb;
+    out.media = m.items.map(function (x) { return { image: x.image, video: x.video, alt: x.alt, width: x.width, height: x.height }; });
+    out.caption = m.caption; out.likes = m.likes; out.comments = m.comments; out.taken = m.taken;
+    return out;
   }
   function postsTotal() {
     var hit = qa('header li, header span, header a').map(text).filter(function (t) { return /^[\d.,KM]+\s+posts?$/i.test(t); })[0];
@@ -217,32 +333,31 @@ enum IGSessionAssets {
   async function grid(opts) {
     opts = opts || {};
     var budget = Date.now() + (opts.maxMs || 15 * 60 * 1000), idleWanted = opts.idleRounds || 6, wait = opts.waitMs || 2500;
+    readEmbedded();
     var found = gridCodes(new Map()), total = postsTotal(), idle = 0, rounds = 0;
     while (Date.now() < budget && idle < idleWanted && (!total || found.size < total)) {
       dismissPrompts();
       var before = found.size;
-      // Scroll to the bottom to trigger Instagram's infinite-scroll API calls.
-      // In current Instagram there are no href links on grid items; fall back to
-      // scrolling the last <a> in main (still a grid cell, just without href).
       var links = qa('main a[href*="/p/"], main a[href*="/reel/"]');
-      var scrollTarget = links.length ? links : qa('main a');
-      if (scrollTarget.length) scrollTarget[scrollTarget.length - 1].scrollIntoView({ block: 'end' });
+      if (links.length) links[links.length - 1].scrollIntoView({ block: 'end' });
       window.scrollTo(0, document.documentElement.scrollHeight);
       var until = Date.now() + wait;
-      while (Date.now() < until) { await sleep(250); gridCodes(found); if (found.size > before) break; }
+      while (Date.now() < until) { await sleep(250); readEmbedded(); gridCodes(found); if (found.size > before) break; }
+      if (!total) total = postsTotal();
       idle = found.size > before ? 0 : idle + 1;
       rounds++;
       if (rounds % 5 === 0) post('progress', { stage: 'grid', found: found.size, total: total });
     }
-    // Sort newest-first to match Instagram's grid order.
-    var sorted = Array.from(found.values()).sort(function (a, b) {
-      return (media[b.code] ? media[b.code].taken : 0) - (media[a.code] ? media[a.code].taken : 0);
-    });
-    return { total: total, items: sorted, ended: !!total && found.size >= total, rounds: rounds,
-             reason: total && found.size >= total ? 'all' : (idle >= idleWanted ? 'nothing more loaded' : 'time limit') };
+    var items = Array.from(found.values()).map(finishTile);
+    // The profile's display name, which the anonymous viewer site doesn't give.
+    var handle = profileHandle(), name = '';
+    Object.keys(media).some(function (k) { var m = media[k]; if (m.owner === handle && m.ownerName) { name = m.ownerName; return true; } return false; });
+    return { total: total, items: items, name: name, ended: !!total && items.length >= total, rounds: rounds,
+             reason: total && items.length >= total ? 'all' : (idle >= idleWanted ? 'nothing more loaded' : 'time limit') };
   }
 
   // ---------- A post: expand everything, then read it ----------
+  var postGen = 0;   // a newer post() or cancel() stops an older one at its next step
   function postRoot() {
     var d = q('[role="dialog"] article') || q('[role="dialog"]');
     return d || q('main article') || q('main') || document.body;
@@ -263,50 +378,92 @@ enum IGSessionAssets {
       var body = qa('span[dir="auto"]', box).filter(function (s) { return !(h3 && h3.contains(s)) && !s.closest('span[dir="ltr"]'); })[0];
       var likeBtn = qa('button, [role="button"]', box).map(text).filter(function (s) { return /^[\d.,KM]+\s+likes?$/i.test(s); })[0];
       var avatar = q('img[alt$="profile picture"]', box);
+      var sticker = qa('img', box).filter(function (i) { return !/profile picture/i.test(i.alt || ''); })[0];   // GIF comments
       out.push({ id: id, parent: parent, author: author, verified: !!(h3 && q('svg[aria-label="Verified"]', h3)),
                  text: longText(body), time: t.getAttribute('datetime') || '', likes: likeBtn ? count(likeBtn) : 0,
-                 avatar: imgURL(avatar) });
+                 avatar: imgURL(avatar), image: imgURL(sticker) });
     });
     return out;
   }
+  // Comments the API sent fill in what the page shows, and add any it hasn't drawn.
+  function mergeComments(list, code) {
+    var byId = {};
+    list.forEach(function (c) { byId[c.id] = c; });
+    Object.keys(comments).map(function (k) { return comments[k]; })
+      .filter(function (c) { return !c.post || c.post === code; })
+      .sort(function (a, b) { return a.order - b.order; })
+      .forEach(function (c) {
+        var d = byId[c.id];
+        if (d) {
+          if (!d.author) d.author = c.author;
+          if (!d.text) d.text = c.text;
+          if (!d.time) d.time = c.time;
+          if (!d.avatar) d.avatar = c.avatar;
+          if (!d.image) d.image = c.image;
+          if (!d.parent && c.parent) d.parent = c.parent;
+          d.likes = Math.max(d.likes || 0, c.likes || 0);
+          d.verified = d.verified || c.verified;
+        } else {
+          d = { id: c.id, parent: c.parent, author: c.author, verified: c.verified, text: c.text, time: c.time, likes: c.likes, avatar: c.avatar, image: c.image };
+          byId[c.id] = d;
+          list.push(d);
+        }
+      });
+    return list;
+  }
+  function moreControl(root) {
+    var icon = qa('svg[aria-label="Load more comments"], svg[aria-label="View more comments"]', root).filter(visible)[0];
+    var b = icon && icon.closest('button, [role="button"]');
+    return b || button(/^(Load|View) more comments$|^View all \d+ comments$/i, root)[0] || null;
+  }
+  function threadControls(root) { return button(/^View (all )?(\d+ )?(more )?repl(y|ies)( \(\d+\))?$/i, root); }
   function inComments(el) {
     var li = el.closest('li');
     return !!(li && (q('time', li) || q('h3', li) || q('h1', li)));
   }
-  function visibleMedia(root, into) {
+  // Fallback when Instagram's data didn't include the post: what the page shows, minus other posts' tiles.
+  function pageMedia(root, code, into) {
     qa('img', root).forEach(function (img) {
       if (/profile picture|highlight/i.test(img.alt || '') || inComments(img)) return;
+      var link = img.closest('a[href]'), other = link && codeFrom(link.getAttribute('href'));
+      if (other && other.code !== code) return;
       var r = img.getBoundingClientRect();
       if (Math.max(r.width, img.naturalWidth || 0) < 150) return;
       var url = imgURL(img);
-      var key = url || ('alt:' + (img.alt || '') + ':' + into.length);
-      if (!into.some(function (x) { return x.key === key; })) into.push({ key: key, image: url, video: '', alt: img.alt || '' });
+      if (url && !into.some(function (x) { return x.image === url; }))
+        into.push({ image: url, video: '', alt: img.alt || '', width: img.naturalWidth || 0, height: img.naturalHeight || 0 });
     });
     qa('video', root).forEach(function (v) {
-      var src = v.currentSrc || v.getAttribute('src') || '';
-      var key = 'video:' + (src || v.getAttribute('poster') || into.length);
-      if (!into.some(function (x) { return x.key === key; }))
-        into.push({ key: key, image: v.getAttribute('poster') || '', video: /^https?:/.test(src) ? src : '', alt: '' });
+      var src = v.currentSrc || v.getAttribute('src') || '', poster = v.getAttribute('poster') || '';
+      var playable = /^https?:/.test(src) ? src : '';   // blob: streams only work inside the page
+      if (!playable && !poster) return;
+      if (!into.some(function (x) { return (playable && x.video === playable) || (!playable && x.image === poster); }))
+        into.push({ image: poster, video: playable, alt: '', width: v.videoWidth || 0, height: v.videoHeight || 0 });
     });
   }
   function carouselNext(root) {
     var art = root.closest ? (root.tagName === 'ARTICLE' ? root : q('article', root) || root) : root;
     return qa('button[aria-label="Next"], [role="button"][aria-label="Next"]', art).filter(function (b) { return visible(b) && b.closest('article'); })[0];
   }
-  async function expand(root, opts) {
+  // The post's own date: the time linked to the post itself; the caption's time comes first and is later.
+  function postDate(root, code) {
+    var outside = qa('time', root).filter(function (t) { return !t.closest('a[href*="/c/"]'); });
+    var own = outside.filter(function (t) { var a = t.closest('a[href]'); return a && code && a.getAttribute('href').indexOf('/' + code) >= 0; })[0];
+    var pick = own || outside[outside.length - 1];
+    return pick ? pick.getAttribute('datetime') || '' : '';
+  }
+  async function expand(root, opts, gen) {
     var limit = opts.maxComments || 3000, deadline = Date.now() + (opts.maxMs || 5 * 60 * 1000), wait = opts.waitMs || 2000;
     var rounds = 0, tries = new WeakMap();
-    function fresh(b) { return (tries.get(b) || 0) < 2; }   // a control that did nothing twice is skipped
-    while (Date.now() < deadline && rounds < (opts.maxRounds || 400)) {
+    function fresh(b) { return !!b && (tries.get(b) || 0) < 2; }   // a control that did nothing twice is skipped
+    while (gen === postGen && Date.now() < deadline && rounds < (opts.maxRounds || 400)) {
       dismissPrompts();
-      var more = button(/^Load more comments$|^View more comments$|^View all \d+ comments$/i, root).filter(fresh)[0];
-      var threads = button(/^View (all )?(\d+ )?(more )?repl(y|ies)( \(\d+\))?$/i, root).filter(fresh);
-      var target = threads[0] || more;
+      var target = threadControls(root).filter(fresh)[0] || [moreControl(root)].filter(fresh)[0];
       if (!target || commentTimes(root).length >= limit) break;
       var before = commentTimes(root).length;
       target.click();
       var until = Date.now() + wait;
-      while (Date.now() < until && commentTimes(root).length === before && target.isConnected && visible(target)) await sleep(200);
+      while (gen === postGen && Date.now() < until && commentTimes(root).length === before && target.isConnected && visible(target)) await sleep(200);
       if (commentTimes(root).length === before) tries.set(target, (tries.get(target) || 0) + 1);
       rounds++;
       if (rounds % 10 === 0) post('progress', { stage: 'comments', found: commentTimes(root).length });
@@ -315,36 +472,48 @@ enum IGSessionAssets {
   }
   async function readPost(opts) {
     opts = opts || {};
+    var gen = ++postGen;
+    readEmbedded();
     var root = postRoot();
     var here = codeFrom(location.pathname) || codeFrom((q('a[href*="/p/"] time', root) || {}).parentElement && q('a[href*="/p/"] time', root).parentElement.getAttribute('href'));
     var code = here ? here.code : '';
-    var rounds = opts.comments === false ? 0 : await expand(root, opts);
-    var found = [];
-    visibleMedia(root, found);
-    for (var i = 0; i < 25; i++) {
-      var next = carouselNext(root);
-      if (!next) break;
-      next.click();
-      await sleep(opts.slideMs || 600);
-      visibleMedia(root, found);
+    var rounds = opts.comments === false ? 0 : await expand(root, opts, gen);
+    readEmbedded();
+    var net = media[code], found = [];
+    if (!(net && net.items.length)) {
+      pageMedia(root, code, found);
+      for (var i = 0; i < 25 && gen === postGen; i++) {
+        var next = carouselNext(root);
+        if (!next) break;
+        next.click();
+        await sleep(opts.slideMs || 600);
+        pageMedia(root, code, found);
+      }
     }
     var captionRow = q('h1', root);
-    var dated = qa('time', root).filter(function (t) { return !t.closest('a[href*="/c/"]'); })[0];
     var likesText = qa('a, span', root).filter(function (el) { return !el.closest('button') && !el.closest('li') && /^[\d.,KM]+\s+likes?$/i.test(text(el)); }).map(text)[0] || '';
     var authorLink = qa('header a[href]', root).filter(function (a) { return /^\/?[\w.]+\/?$/.test((a.getAttribute('href') || '').replace(/^https:\/\/www\.instagram\.com/, '')) && text(a); })[0];
-    var net = media[code];
+    var useNet = !!(net && net.items.length);
     return {
-      code: code, author: authorLink ? text(authorLink) : '', caption: longText(captionRow) || (net ? net.caption : ''),
-      date: dated ? dated.getAttribute('datetime') || '' : (net && net.taken ? new Date(net.taken * 1000).toISOString() : ''),
+      code: code, author: authorLink ? text(authorLink) : (net ? net.owner : ''),
+      caption: longText(captionRow) || (net ? net.caption : ''),
+      date: (net && net.taken ? new Date(net.taken * 1000).toISOString() : '') || postDate(root, code),
       likes: likesText ? count(likesText) : (net ? net.likes : 0),
-      media: net && net.items.length ? net.items.map(function (x) { return { image: x.image, video: x.video, alt: '' }; })
-                                     : found.map(function (x) { return { image: x.image, video: x.video, alt: x.alt }; }),
-      mediaFrom: net && net.items.length ? 'network' : 'page',
-      comments: readComments(root), expandRounds: rounds
+      media: useNet ? net.items.map(function (x) { return { image: x.image, video: x.video, alt: x.alt, width: x.width, height: x.height }; }) : found,
+      mediaFrom: useNet ? 'network' : 'page',
+      comments: opts.comments === false ? [] : mergeComments(readComments(root), code),
+      expandRounds: rounds
     };
   }
+  function probe() {
+    var r = postRoot();
+    return { more: !!moreControl(r), threads: threadControls(r).length, comments: commentTimes(r).length,
+             posts: Object.keys(media).length, apiComments: Object.keys(comments).length };
+  }
 
-  window.__igl = { state: state, login: login, dismissPrompts: dismissPrompts, grid: grid, post: readPost,
+  window.__igl = { state: state, login: login, dismissPrompts: dismissPrompts, grid: grid, post: readPost, probe: probe,
+                   cancel: function () { postGen++; return 'ok'; },
+                   ingest: function (o) { walk(o, 0, 0, ''); return Object.keys(media).length; },
                    blocked: function () { return blocked.slice(); }, media: function () { return media; } };
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', function () { post('ready', { url: location.href }); });
   else post('ready', { url: location.href });

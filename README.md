@@ -51,9 +51,13 @@ The Instagram engine (`Sources/Instagram/IGAssets.swift`) is byte-identical to `
 
 Without signing in, Instagram shows only an account's newest posts and NinjaView can't reach older ones; stories come from insta-stories-viewer.com. Sign in to archive an account's **full post history with comments**.
 
-Add a sign-in under **Settings > Instagram sign-in** (username and password, kept only in this iPhone's Keychain). Once signed in, **posts come from your Instagram session by default** — a profile's Posts section offers **Archive all posts**, which scrolls the whole grid on a hidden instagram.com page and opens each post for its photos, videos and complete comment threads, saving them into the same archive as the stories. Replies are threaded under their comments, and an archived post shows its caption, like count and saved comments.
+Add a sign-in under **Settings > Instagram sign-in** (username and password, kept only in this iPhone's Keychain). **Posts only ever come from your Instagram session**; the viewer site is used for stories alone.
 
-To instead preview an account's newest posts (about 12) from insta-stories-viewer.com without signing in, turn on **Settings > Instagram sign-in > Preview posts without signing in**. That is the only way posts use the viewer site; stories always come from it.
+- **The profile's posts, live.** Opening a profile loads its whole grid the way Instagram shows it: 3:4 tiles, pinned posts first, with the pin, carousel and reel badges, and the account's display name in the header. A carousel is one post, however many slides it has.
+- **A post.** Tap a tile: its photos and videos open at once at their real shape (swipe through a carousel), with likes, caption and date, then its comments load with their replies threaded underneath (up to 300 per post; GIF comments show their image).
+- **Archive all posts** scrolls the whole grid on the hidden page and opens each post for its photos, videos and complete comment threads, saving them into the same archive as the stories.
+
+The hidden page asks for Instagram's **desktop** site, at a desktop size behind the app: there a post opens with its comments beside it, which the engine reads. (The phone site lists comments on a separate page, which is why they never loaded.) Because the session changed from the phone site to the desktop one, Instagram may ask once to confirm it's you; clear it from **Settings > Instagram sign-in > Open Instagram**.
 
 **Important:**
 - **Use a throwaway account.** Automating a real account can get it rate-limited or flagged. While signed in, that account is no longer anonymous; it's used only for archiving posts and comments.
@@ -61,7 +65,7 @@ To instead preview an account's newest posts (about 12) from insta-stories-viewe
 - **It runs only while the app is open.** A full history of a large account is a one-time wait, and Instagram may rate-limit partway; archiving saves as it goes and resumes on the next run, skipping posts already saved. A pause between posts keeps it under Instagram's limits.
 - **A checkpoint** ("was this you", a code, or two-factor) surfaces as a prompt; open the page from Settings or the archiver, clear it, and run again.
 
-The signed-in engine (`Sources/Instagram/IGSessionAssets.swift`) is byte-identical to the tested `igsession.js`, checked in Chromium against ten saved instagram.com pages (home, profile and several posts): signed-in detection, scrolling the grid to the end, reading every comment and reply with authors, timestamps and likes, pulling real media URLs from Instagram's own data, and the story/highlight guard blocking exactly the story actions and nothing else.
+The signed-in engine (`Sources/Instagram/IGSessionAssets.swift`) reads Instagram's own data first (its API answers and the JSON embedded in each page) and the page's markup as a fallback. It was checked in Chromium against saved desktop instagram.com pages (a signed-in profile grid, and a post's comments before and after opening replies) plus Instagram-shaped API data: the grid's order and badges, carousel slides never becoming posts, other accounts' posts left out, every comment and reply with its author, time and likes, clicking the icon-only "Load more comments" button, the post's own date, and stopping a read when another post opens.
 
 ### New-post notifications
 

@@ -35,11 +35,11 @@ struct IGProfileScreen: View {
                 }
             }
             .task { await engine.loadAll() }
+            // Posts come from the signed-in session, so they don't wait for the viewer site.
+            .task { await liveGrid.load(engine.handle) }
             .onChange(of: engine.profile) { _, profile in
                 if let profile, profile.status == "ok" || profile.isPrivate {
                     app.didLoad(profile.header, platform: .instagram)
-                    // Kick off the live post grid once the profile handle is confirmed.
-                    Task { await liveGrid.load(profile.handle) }
                 }
             }
             .fullScreenCover(item: $viewer) { request in
@@ -48,8 +48,9 @@ struct IGProfileScreen: View {
                     .environmentObject(DownloadCenter.shared)
             }
             .sheet(item: $selectedPost) { item in
-                IGLivePostSheet(handle: handle, gridItem: item)
+                IGLivePostSheet(handle: handle, item: item, model: liveGrid)
                     .environmentObject(DownloadCenter.shared)
+                    .environmentObject(AvatarStore.shared)
             }
             .sheet(isPresented: $notifyOpen) {
                 NotifySheet(handle: handle, name: "", platform: .instagram)
@@ -100,7 +101,9 @@ struct IGProfileScreen: View {
         let stories = engine.stories?.items ?? []
         return ScrollView {
             VStack(alignment: .leading, spacing: 0) {
-                InstaHeader(header: profile.header, avatarURL: profile.avatarURL, hasStories: !stories.isEmpty,
+                InstaHeader(header: ProfileHeader(handle: profile.handle, name: liveGrid.name, bio: profile.bio,
+                                                  avatar: profile.avatar, stats: profile.stats),
+                            avatarURL: profile.avatarURL, hasStories: !stories.isEmpty,
                             onAvatarTap: { openStories(at: 0) }, onStatTap: { _ in })
                     .padding(.horizontal, 16)
                     .padding(.top, 8)
@@ -127,7 +130,11 @@ struct IGProfileScreen: View {
             }
             .padding(.bottom, 24)
         }
-        .refreshable { await engine.refresh() }
+        .refreshable {
+            let handle = self.handle
+            Task { await liveGrid.refresh(handle) }
+            await engine.refresh()
+        }
     }
 
     // MARK: Buttons and status
@@ -254,7 +261,7 @@ struct IGProfileScreen: View {
 
             switch liveGrid.phase {
             case .idle:
-                // Still waiting for the profile to confirm the handle (happens quickly).
+                // Only until the screen's load task starts.
                 ProgressView().frame(maxWidth: .infinity).padding(.vertical, 20)
 
             case .loading:
@@ -277,7 +284,8 @@ struct IGProfileScreen: View {
                     LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 2), count: 3), spacing: 2) {
                         ForEach(liveGrid.items) { item in
                             Button { selectedPost = item } label: {
-                                IGCell(thumb: URL.remote(item.thumb), isVideo: item.video)
+                                IGCell(thumb: item.thumbURL, isVideo: item.video, aspect: 3.0 / 4.0,
+                                       isCarousel: item.multi, isPinned: item.pinned)
                             }
                             .buttonStyle(.plain)
                         }
@@ -629,15 +637,27 @@ struct IGCell: View {
     let thumb: URL?
     let isVideo: Bool
     var label: String = ""
+    /// Width over height. Instagram's profile grid uses 3:4 tiles; archives use squares.
+    var aspect: CGFloat = 1
+    var isCarousel = false
+    var isPinned = false
+
+    /// Instagram's corner icon: a pin outranks a carousel, which outranks a reel.
+    private var badge: String? {
+        if isPinned { return "pin.fill" }
+        if isCarousel { return "square.on.square" }
+        if isVideo { return "play.fill" }
+        return nil
+    }
 
     var body: some View {
         Color.nvRule.opacity(0.3)
-            .aspectRatio(1, contentMode: .fit)
+            .aspectRatio(aspect, contentMode: .fit)
             .overlay { RemoteImage(thumb, maxPixel: 400) }
             .clipped()
             .overlay(alignment: .topTrailing) {
-                if isVideo {
-                    Image(systemName: "play.fill")
+                if let badge {
+                    Image(systemName: badge)
                         .font(.system(size: 12, weight: .bold))
                         .foregroundStyle(Color.white)
                         .shadow(color: .black.opacity(0.5), radius: 2)
@@ -655,7 +675,7 @@ struct IGCell: View {
             }
             .contentShape(Rectangle())
             .accessibilityElement(children: .ignore)
-            .accessibilityLabel(isVideo ? "Video" : "Photo")
+            .accessibilityLabel((isPinned ? "Pinned " : "") + (isCarousel ? "carousel" : isVideo ? "video" : "photo"))
     }
 }
 

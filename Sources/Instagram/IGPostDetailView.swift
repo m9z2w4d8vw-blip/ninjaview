@@ -27,9 +27,11 @@ struct IGPostDetailView: View {
     @State private var commentsOpen = false
 
     private var files: [String] { post.files.isEmpty ? [post.file] : post.files }
+    private var currentFile: String { files.indices.contains(index) ? files[index] : post.file }
+    /// Decided per slide from its file: a carousel can mix photos and videos.
     private var isVideoAt: Bool {
-        // A multi-file carousel stores photos; a lone video keeps media == "video".
-        files.count == 1 && post.isVideo
+        let ext = (currentFile as NSString).pathExtension.lowercased()
+        return ext == "mp4" || ext == "mov" || (files.count == 1 && post.isVideo)
     }
 
     var body: some View {
@@ -54,20 +56,23 @@ struct IGPostDetailView: View {
     }
 
     @ViewBuilder private var media: some View {
-        let name = files.indices.contains(index) ? files[index] : post.file
-        let url = IGArchive.shared.fileURL(handle, name)
-        if isVideoAt {
-            ZStack {
-                if !player.isReady, let cover = IGArchive.shared.fileURL(handle, post.cover) {
-                    RemoteImage(cover, maxPixel: 1400, mode: .fit, placeholder: .black)
+        let url = IGArchive.shared.fileURL(handle, currentFile)
+        Group {
+            if isVideoAt {
+                ZStack {
+                    if !player.isReady, let cover = IGArchive.shared.fileURL(handle, post.cover) {
+                        RemoteImage(cover, maxPixel: 1400, mode: .fit, placeholder: .black)
+                    }
+                    PlayerSurface(player: player.player)
+                    if !player.isReady { ProgressView().tint(.white) }
                 }
-                PlayerSurface(player: player.player)
-                if !player.isReady { ProgressView().tint(.white) }
+            } else {
+                RemoteImage(url, maxPixel: 2200, mode: .fit, placeholder: .black)
             }
-        } else {
-            RemoteImage(url, maxPixel: 2200, mode: .fit, placeholder: .black)
-                .highPriorityGesture(dragBetweenImages)
         }
+        // On videos too, so a carousel's video slide can be swiped past.
+        .contentShape(Rectangle())
+        .highPriorityGesture(dragBetweenImages)
     }
 
     private var dragBetweenImages: some Gesture {
@@ -125,19 +130,19 @@ struct IGPostDetailView: View {
     }
 
     private func loadCurrent() async {
-        guard isVideoAt, let url = IGArchive.shared.fileURL(handle, post.file) else { player.stop(); return }
+        guard isVideoAt, let url = IGArchive.shared.fileURL(handle, currentFile) else { player.stop(); return }
         player.load(url)
         player.isMuted = false
         player.play()
     }
 
     private func save() {
-        guard let url = IGArchive.shared.fileURL(handle, files.indices.contains(index) ? files[index] : post.file) else { return }
+        guard let url = IGArchive.shared.fileURL(handle, currentFile) else { return }
         downloads.fetch(url, kind: isVideoAt ? .video : .photo, baseName: "instagram-\(handle)")
     }
 
     private func share() {
-        guard let url = IGArchive.shared.fileURL(handle, files.indices.contains(index) ? files[index] : post.file) else { return }
+        guard let url = IGArchive.shared.fileURL(handle, currentFile) else { return }
         downloads.share(url, kind: isVideoAt ? .video : .photo, baseName: "instagram-\(handle)")
     }
 }

@@ -134,15 +134,20 @@ final class IGSession: ObservableObject, PageBridgeDelegate {
     }
 
     /// Opens one post by code and reads its media and full comment threads.
-    func readPost(_ code: String, comments: Bool = true, maxMinutes: Double = 5) async -> IGPostDetail? {
+    func readPost(_ code: String, comments: Bool = true, maxMinutes: Double = 5, maxComments: Int = 4000) async -> IGPostDetail? {
         guard let url = URL(string: "https://www.instagram.com/p/\(code)/") else { return nil }
         bridge.loadURL(url)
-        guard await bridge.waitUntilReady(timeout: 30) else { return nil }
-        guard await confirmSignedIn() else { return nil }
+        guard await bridge.waitUntilReady(timeout: 30), !Task.isCancelled else { return nil }
+        guard await confirmSignedIn(), !Task.isCancelled else { return nil }
+        // A sign-in along the way ends on Instagram's home page; open the post again.
+        if !(bridge.webView.url?.path.contains("/\(code)") ?? false) {
+            bridge.loadURL(url)
+            guard await bridge.waitUntilReady(timeout: 30), !Task.isCancelled else { return nil }
+        }
         do {
             let json = try await bridge.call(
-                "return JSON.stringify(await window.__igl.post({comments: c, maxComments: 4000, maxMs: m, waitMs: 2000, slideMs: 700, maxRounds: 500}));",
-                ["c": comments, "m": Int(maxMinutes * 60_000)], timeout: maxMinutes * 60 + 30)
+                "return JSON.stringify(await window.__igl.post({comments: c, maxComments: n, maxMs: m, waitMs: 2000, slideMs: 700, maxRounds: 500}));",
+                ["c": comments, "n": maxComments, "m": Int(maxMinutes * 60_000)], timeout: maxMinutes * 60 + 30)
             let detail = try bridge.decode(IGPostDetail.self, json)
             noteBlocked()
             return detail
@@ -173,6 +178,11 @@ final class IGSession: ObservableObject, PageBridgeDelegate {
             if state.challenge { phase = .challenge; return false }
         }
         return await ensureSignedIn()
+    }
+
+    /// Stops a post read that is still opening comments, so the next one can start right away.
+    func cancelPost() async {
+        _ = try? await bridge.call("if (window.__igl) window.__igl.cancel(); return 'ok';", [:], timeout: 5)
     }
 
     func showPage() { pageVisible = true }
@@ -214,6 +224,13 @@ final class IGSession: ObservableObject, PageBridgeDelegate {
 }
 
 extension WebFactory {
+    /// The signed-in page asks for Instagram's desktop site: there a post opens with its comments
+    /// beside it, and that is the layout the engine reads. The phone site lists a post's comments
+    /// on a separate page, so comments never loaded.
+    static let desktopUserAgent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.6 Safari/605.1.15"
+    /// Wide enough for Instagram's two-column post view. The page sits behind the app, so its size never shows.
+    static let desktopPageSize = CGSize(width: 1280, height: 960)
+
     /// A hidden instagram.com page with the signed-in engine injected at document start, so its
     /// story guard is active before Instagram's own scripts run. Cookies persist (unlike the
     /// anonymous pages) so the sign-in lasts between launches.
@@ -223,8 +240,7 @@ extension WebFactory {
         config.websiteDataStore = Self.instagramSessionStore
         config.allowsInlineMediaPlayback = true
         config.mediaTypesRequiringUserActionForPlayback = .all
-        config.applicationNameForUserAgent = Self.safariSuffix
-        config.defaultWebpagePreferences.preferredContentMode = .mobile
+        config.defaultWebpagePreferences.preferredContentMode = .desktop
 
         let router = ScriptRouter()
         let content = WKUserContentController()
@@ -232,15 +248,15 @@ extension WebFactory {
         content.addUserScript(WKUserScript(source: IGSessionAssets.engineJS, injectionTime: .atDocumentStart, forMainFrameOnly: true))
         config.userContentController = content
 
-        let frame = EngineDock.hostWindow?.bounds ?? CGRect(x: 0, y: 0, width: 390, height: 844)
-        let webView = WKWebView(frame: frame, configuration: config)
+        let webView = WKWebView(frame: CGRect(origin: .zero, size: Self.desktopPageSize), configuration: config)
+        webView.customUserAgent = Self.desktopUserAgent
         webView.isOpaque = false
         webView.backgroundColor = Palette.paper
         webView.scrollView.backgroundColor = Palette.paper
         webView.allowsLinkPreview = false
         webView.allowsBackForwardNavigationGestures = false
         webView.isInspectable = true
-        EngineDock.park(webView)
+        EngineDock.park(webView, size: Self.desktopPageSize)
         webView.load(URLRequest(url: url))
         return PreparedWebView(webView: webView, router: router)
     }
