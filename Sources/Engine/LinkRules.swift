@@ -1,6 +1,13 @@
 import Foundation
 
 enum LinkRules {
+    /// Restrict the authenticated browser to Instagram itself. A suffix check without the dot
+    /// would also trust attacker-owned domains such as fakeinstagram.com.
+    static func isInstagram(_ url: URL) -> Bool {
+        guard url.scheme?.lowercased() == "https", let host = url.host?.lowercased() else { return false }
+        return host == "instagram.com" || host.hasSuffix(".instagram.com")
+    }
+
     static func isTikNinja(_ url: URL) -> Bool {
         guard let host = url.host?.lowercased() else { return false }
         return host == "tik.ninja" || host.hasSuffix(".tik.ninja")
@@ -9,11 +16,6 @@ enum LinkRules {
     static func isTikTok(_ url: URL) -> Bool {
         guard let host = url.host?.lowercased() else { return false }
         return host == "tiktok.com" || host.hasSuffix(".tiktok.com")
-    }
-
-    static func isInstagram(_ url: URL) -> Bool {
-        guard let host = url.host?.lowercased() else { return false }
-        return host == "instagram.com" || host.hasSuffix(".instagram.com")
     }
 
     private static let mediaHosts = ["tiktokcdn", "ibyteimg", "byteoversea", "muscdn", "tiktokv.", "ttwstatic"]

@@ -29,23 +29,34 @@ final class IGSession: ObservableObject, PageBridgeDelegate {
     private(set) var blockedCount = 0
 
     init() {
-        bridge = PageBridge(WebFactory.shared.makeInstagramSessionPage(IGLinks.instagramHome))
-        // Must be set before the main runloop yields so the first navigation decision sees it.
-        bridge.allowsInstagram = true
+        bridge = PageBridge(WebFactory.shared.makeInstagramSessionPage(IGLinks.instagramHome),
+                            allowInstagramNavigation: true)
         bridge.delegate = self
     }
 
-    /// Prepares the hidden page to be shown in the verify sheet: makes sure it's loaded and signed
-    /// in (so the person lands on whatever check Instagram wants), and re-enables touches.
-    func prepareForDisplay() async {
+    /// Present the real page for a human to sign in or complete a checkpoint.
+    /// Do not run the automatic login routine while the person is trying to interact:
+    /// it can consume the whole loading interval, dismiss prompts and interfere with 2FA.
+    @discardableResult
+    func prepareForDisplay() async -> Bool {
         ensureStarted()
-        await ensureSignedIn(timeout: 15)
+        pageVisible = true
         bridge.webView.isUserInteractionEnabled = true
         bridge.webView.accessibilityElementsHidden = false
+        if await bridge.waitUntilReady(timeout: 15) { return true }
+        fail(bridge.lastLoadError.map { "Instagram didn't load: \($0)" } ??
+             "Instagram did not finish opening. Try reloading the page.")
+        return false
+    }
+
+    func reloadForDisplay() {
+        phase = .loading
+        bridge.reload(fallback: IGLinks.instagramHome)
     }
 
     /// Returns the webview to the off-screen dock and turns touches back off.
     func parkAfterDisplay() {
+        pageVisible = false
         bridge.webView.isUserInteractionEnabled = false
         bridge.webView.accessibilityElementsHidden = true
         bridge.park()
@@ -65,7 +76,8 @@ final class IGSession: ObservableObject, PageBridgeDelegate {
     func ensureSignedIn(timeout: Double = 40) async -> Bool {
         ensureStarted()
         guard await bridge.waitUntilReady(timeout: 30) else {
-            fail("Instagram didn't load. Check your connection and try again.")
+            fail(bridge.lastLoadError.map { "Instagram didn't load: \($0)" } ??
+                 "Instagram didn't load. Check your connection and try again.")
             return false
         }
         if let state = await readState() {
@@ -85,9 +97,7 @@ final class IGSession: ObservableObject, PageBridgeDelegate {
         DebugLog.shared.add(.web, "Signing in to Instagram as @\(username)")
         do {
             let json = try await bridge.call("return JSON.stringify(await window.__igl.login(u, p, t));",
-                                             ["u": username, "p": password, "t": Int(timeout * 1000)],
-                                             timeout: timeout + 10,
-                                             redacting: ["p"])
+                                             ["u": username, "p": password, "t": Int(timeout * 1000)], timeout: timeout + 10)
             let state = try bridge.decode(IGLoginState.self, json)
             if state.loggedIn { phase = .signedIn; DebugLog.shared.add(.web, "Signed in to Instagram"); return true }
             if state.challenge {
@@ -227,7 +237,10 @@ extension WebFactory {
         webView.scrollView.backgroundColor = Palette.paper
         webView.allowsLinkPreview = false
         webView.allowsBackForwardNavigationGestures = false
+        // Do not expose a signed-in browser or page data to Web Inspector in release builds.
+        #if DEBUG
         webView.isInspectable = true
+        #endif
         EngineDock.park(webView)
         webView.load(URLRequest(url: url))
         return PreparedWebView(webView: webView, router: router)
@@ -238,14 +251,4 @@ extension WebFactory {
         let store = WKWebsiteDataStore.default()
         return store
     }()
-
-    /// Erases all instagram.com cookies and storage from the app-private persistent store.
-    /// Call this on sign-out so a later sign-in as a different account starts clean.
-    func clearInstagramData() async {
-        await Self.instagramSessionStore.removeData(
-            ofTypes: WKWebsiteDataStore.allWebsiteDataTypes(),
-            modifiedSince: .distantPast
-        )
-        DebugLog.shared.add(.web, "Cleared Instagram session data")
-    }
 }

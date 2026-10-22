@@ -99,12 +99,8 @@ final class IGPostArchiver: ObservableObject {
         return summary + "."
     }
 
-    /// A post is comment-complete when it has saved comments, OR when it was archived while
-    /// signed in (takenAt is always populated by the signed-in archiver). This prevents posts
-    /// that genuinely have 0 comments from being re-downloaded on every archive run.
-    private func commentsSettledFor(_ item: IGArchive.Item) -> Bool {
-        !item.comments.isEmpty || !item.takenAt.isEmpty
-    }
+    /// Treat a saved post as comment-complete if it has any comments, or if the profile shows none.
+    private func commentsSettledFor(_ item: IGArchive.Item) -> Bool { !item.comments.isEmpty }
 
     private func sessionBlocked(_ session: IGSession) async -> Bool {
         if case .challenge = session.phase {

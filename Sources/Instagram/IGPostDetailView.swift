@@ -1,19 +1,5 @@
 import SwiftUI
 
-/// Parses an ISO 8601 date string, accepting both the plain variant and Instagram's
-/// fractional-seconds form (e.g. "2024-01-15T12:34:56.000Z").
-private func parseISO8601(_ string: String) -> Date? {
-    let f = ISO8601DateFormatter()
-    for options: ISO8601DateFormatter.Options in [
-        [.withInternetDateTime, .withFractionalSeconds],
-        [.withInternetDateTime]
-    ] {
-        f.formatOptions = options
-        if let date = f.date(from: string) { return date }
-    }
-    return nil
-}
-
 /// One archived post, full-screen: swipe through its photos and videos, read the caption, and
 /// open its saved comments and replies. Used from an Instagram archive's Posts grid.
 @MainActor
@@ -84,7 +70,7 @@ struct IGPostDetailView: View {
                 .frame(width: 32, height: 32)
             VStack(alignment: .leading, spacing: 1) {
                 Text(handle).font(.subheadline.weight(.semibold)).foregroundStyle(.white)
-                if !post.takenAt.isEmpty, let when = parseISO8601(post.takenAt) {
+                if !post.takenAt.isEmpty, let when = ISO8601DateFormatter().date(from: post.takenAt) {
                     Text(when.formatted(date: .abbreviated, time: .omitted))
                         .font(.caption).foregroundStyle(.white.opacity(0.75))
                 }
@@ -214,7 +200,7 @@ struct IGCommentsSheet: View {
     }
 
     private func relativeTime(_ iso: String) -> String? {
-        guard let date = parseISO8601(iso) else { return nil }
+        guard let date = ISO8601DateFormatter().date(from: iso) else { return nil }
         return date.formatted(.relative(presentation: .named))
     }
 }

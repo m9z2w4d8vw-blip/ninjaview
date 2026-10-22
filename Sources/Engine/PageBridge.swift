@@ -27,19 +27,24 @@ final class JSDialog: Identifiable {
 
 /// Resumes a continuation once, whichever of the reply or the timeout comes first.
 final class ResumeOnce<T> {
+    // The JavaScript completion callback and timeout can race on different queues.
+    // Taking the continuation under a lock prevents a fatal double-resume.
+    private let lock = NSLock()
     private var continuation: CheckedContinuation<T, Error>?
 
     init(_ continuation: CheckedContinuation<T, Error>) { self.continuation = continuation }
 
-    func resume(returning value: T) {
-        continuation?.resume(returning: value)
+    private func take() -> CheckedContinuation<T, Error>? {
+        lock.lock()
+        defer { lock.unlock() }
+        let current = continuation
         continuation = nil
+        return current
     }
 
-    func resume(throwing error: Error) {
-        continuation?.resume(throwing: error)
-        continuation = nil
-    }
+    func resume(returning value: T) { take()?.resume(returning: value) }
+
+    func resume(throwing error: Error) { take()?.resume(throwing: error) }
 }
 
 @MainActor
@@ -56,17 +61,18 @@ protocol PageBridgeDelegate: AnyObject {
 final class PageBridge: NSObject {
     let webView: WKWebView
     private let router: ScriptRouter
+    /// Only the dedicated signed-in browser may navigate to instagram.com.
+    private let allowInstagramNavigation: Bool
     weak var delegate: PageBridgeDelegate?
     private(set) var isReady = false
     private(set) var isTornDown = false
-    /// Set to true for the signed-in Instagram session page so top-level navigations to
-    /// instagram.com are allowed. Must be set before the first runloop yield after init().
-    var allowsInstagram = false
     private var navigationStart: Date?
+    private(set) var lastLoadError: String?
 
-    init(_ prepared: PreparedWebView) {
+    init(_ prepared: PreparedWebView, allowInstagramNavigation: Bool = false) {
         webView = prepared.webView
         router = prepared.router
+        self.allowInstagramNavigation = allowInstagramNavigation
         super.init()
         webView.navigationDelegate = self
         webView.uiDelegate = self
@@ -76,7 +82,7 @@ final class PageBridge: NSObject {
     func waitUntilReady(timeout: TimeInterval) async -> Bool {
         let deadline = Date().addingTimeInterval(timeout)
         while !isReady {
-            if isTornDown || Date() > deadline { return false }
+            if isTornDown || lastLoadError != nil || Date() > deadline { return false }
             try? await Task.sleep(nanoseconds: 100_000_000)
         }
         return true
@@ -84,16 +90,15 @@ final class PageBridge: NSObject {
 
     /// Runs an async function body in the page and logs what it did and how long it took.
     /// Engine calls always return a JSON string.
-    /// `redacting` is a set of argument keys whose values are replaced with *** in the debug log.
-    func call(_ body: String, _ arguments: [String: Any] = [:], timeout: TimeInterval = 45, redacting: Set<String> = []) async throws -> String {
+    func call(_ body: String, _ arguments: [String: Any] = [:], timeout: TimeInterval = 45) async throws -> String {
         let name = Self.callName(body)
         let started = Date()
         do {
             let json = try await rawCall(body, arguments, timeout: timeout)
-            DebugLog.shared.add(.web, "\(name)(\(Self.describe(arguments, redacting: redacting))) took \(Self.ms(since: started)) ms, \(json.utf8.count) bytes back")
+            DebugLog.shared.add(.web, "\(name)(\(Self.describe(arguments))) took \(Self.ms(since: started)) ms, \(json.utf8.count) bytes back")
             return json
         } catch {
-            DebugLog.shared.error(.web, "\(name)(\(Self.describe(arguments, redacting: redacting))) failed after \(Self.ms(since: started)) ms: \(error.localizedDescription)")
+            DebugLog.shared.error(.web, "\(name)(\(Self.describe(arguments))) failed after \(Self.ms(since: started)) ms: \(error.localizedDescription)")
             throw error
         }
     }
@@ -103,9 +108,12 @@ final class PageBridge: NSObject {
         return String(body[range].dropFirst(5))
     }
 
-    nonisolated static func describe(_ arguments: [String: Any], redacting: Set<String> = []) -> String {
-        arguments.keys.sorted().map { key in
-            if redacting.contains(key) { return "\(key)=***" }
+    nonisolated static func describe(_ arguments: [String: Any]) -> String {
+        // IMPORTANT: IGSession passes the saved password as the `p` JavaScript argument.
+        // Never persist it in the exported diagnostic log.
+        let sensitive: Set<String> = ["p", "password", "passwd", "pass", "secret", "token", "access_token", "authorization", "cookie"]
+        return arguments.keys.sorted().map { key in
+            if sensitive.contains(key.lowercased()) { return "\(key)=<redacted>" }
             let value = String(describing: arguments[key] ?? "")
             return "\(key)=\(value.count > 80 ? String(value.prefix(80)) + "\u{2026}" : value)"
         }.joined(separator: ", ")
@@ -153,11 +161,13 @@ final class PageBridge: NSObject {
     func loadURL(_ url: URL) {
         guard !isTornDown else { return }
         isReady = false
+        lastLoadError = nil
         webView.load(URLRequest(url: url))
     }
 
     func reload(fallback: URL? = nil) {
         isReady = false
+        lastLoadError = nil
         if webView.url == nil {
             webView.load(URLRequest(url: fallback ?? WebFactory.homeURL))
         } else {
@@ -240,7 +250,9 @@ extension PageBridge: WKNavigationDelegate {
             return .cancel
         }
         if LinkRules.isTikNinja(url) || IGLinks.isViewer(url) { return .allow }
-        if allowsInstagram && LinkRules.isInstagram(url) { return .allow }
+        // Previously every www.instagram.com navigation was rejected here, leaving the
+        // sign-in sheet on "Opening Instagram" indefinitely.
+        if allowInstagramNavigation && LinkRules.isInstagram(url) { return .allow }
         if LinkRules.isTikTok(url) {
             AppModel.shared.open(url.absoluteString)
             return .cancel
@@ -283,6 +295,8 @@ extension PageBridge: WKNavigationDelegate {
     }
 
     func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
+        isReady = false
+        lastLoadError = nil
         navigationStart = Date()
         DebugLog.shared.add(.web, "Loading \(webView.url?.absoluteString ?? "page")")
     }
@@ -311,6 +325,7 @@ extension PageBridge: WKNavigationDelegate {
         // -999: replaced by another navigation. 102: became a download. 204: handled by a plug-in.
         if ns.domain == NSURLErrorDomain && ns.code == NSURLErrorCancelled { return }
         if ns.domain == "WebKitErrorDomain" && (ns.code == 102 || ns.code == 204) { return }
+        lastLoadError = ns.localizedDescription
         DebugLog.shared.error(.web, "Load failed: \(ns.domain) \(ns.code) \(ns.localizedDescription)")
         delegate?.bridgeFailedToLoad(error)
     }
