@@ -61,9 +61,10 @@ final class IGPostArchiver: ObservableObject {
         guard let grid = await session.readGrid(handle) else {
             return "Couldn't read @\(handle)'s posts. Try again in a little while."
         }
-        // Skip posts already saved that don't still need comments; keep the newest first.
+        // Skip posts whose comments are all saved; the rest are opened again (their media is kept, only
+        // comments are fetched), newest first.
         let existing = IGArchive.shared.account(handle)
-        let savedComplete = Set((existing?.posts ?? []).filter { !$0.comments.isEmpty || $0.kind == "post" && commentsSettledFor($0) }.map(\.key))
+        let savedComplete = Set((existing?.posts ?? []).filter(\.commentsComplete).map(\.key))
         let wanted = grid.items.filter { !savedComplete.contains($0.code) }
         total = wanted.count
 
@@ -79,7 +80,7 @@ final class IGPostArchiver: ObservableObject {
             if cancelled || Task.isCancelled { break }
             done = index
             status = "Saving post \(index + 1) of \(wanted.count)"
-            guard var detail = await session.readPost(item.code) else {
+            guard var detail = await session.readPost(item.code, expected: item.comments ?? 0) else {
                 failed += 1
                 if await sessionBlocked(session) { break }
                 continue
@@ -88,7 +89,8 @@ final class IGPostArchiver: ObservableObject {
             if detail.media.isEmpty, !item.slides.isEmpty {
                 detail = IGPostDetail(code: detail.code, author: detail.author, caption: detail.caption.isEmpty ? (item.caption ?? "") : detail.caption,
                                       date: detail.date, likes: detail.likes, media: item.slides, mediaFrom: "grid",
-                                      comments: detail.comments, expandRounds: detail.expandRounds)
+                                      comments: detail.comments, expandRounds: detail.expandRounds,
+                                      expected: detail.expected, exhausted: detail.exhausted, complete: detail.complete)
             }
             let ok = await IGArchive.shared.absorbSignedInPost(handle, grid: item, detail: detail, profileTotal: grid.total)
             if ok { saved += 1 } else { failed += 1 }
@@ -101,15 +103,10 @@ final class IGPostArchiver: ObservableObject {
         if cancelled { return "Stopped. Saved \(saved) new post\(saved == 1 ? "" : "s") from @\(handle); run again to continue." }
         var summary = "Saved \(saved) post\(saved == 1 ? "" : "s") from @\(handle)"
         if failed > 0 { summary += ", \(failed) couldn't be saved (run again to retry)" }
+        let short = IGArchive.shared.account(handle)?.posts.filter { !$0.commentsComplete }.count ?? 0
+        if short > 0 { summary += ", \(short) still missing comments (run again to fetch them)" }
         if !grid.ended { summary += ". Instagram didn't list them all; run again later for the rest" }
         return summary + "."
-    }
-
-    /// A post is comment-complete when it has saved comments, OR when it was archived while
-    /// signed in (takenAt is always populated by the signed-in archiver). This prevents posts
-    /// that genuinely have 0 comments from being re-downloaded on every archive run.
-    private func commentsSettledFor(_ item: IGArchive.Item) -> Bool {
-        !item.comments.isEmpty || !item.takenAt.isEmpty
     }
 
     private func sessionBlocked(_ session: IGSession) async -> Bool {

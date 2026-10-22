@@ -27,6 +27,8 @@ enum FeedSource {
     case linked(ProfileEngine, ItemDetail)
     /// Saved posts, played from local files.
     case stored(StoredFeed)
+    /// An Instagram archive's stories or posts, in the same list.
+    case instagram(IGArchiveFeed)
 }
 
 /// Post lists pushed onto the navigation stack, closed when their screen leaves it.
@@ -97,8 +99,14 @@ final class FeedModel: ObservableObject {
     var engine: ProfileEngine? {
         switch source {
         case .live(let engine, _), .linked(let engine, _): return engine
-        case .stored: return nil
+        case .stored, .instagram: return nil
         }
+    }
+
+    /// Which site the posts are from: @mentions and tapped names open profiles there.
+    var platform: Platform {
+        if case .instagram = source { return .instagram }
+        return .tiktok
     }
 
     var tab: ProfileTab? {
@@ -106,6 +114,7 @@ final class FeedModel: ObservableObject {
         case .live(_, let tab): return tab
         case .linked: return nil
         case .stored(let feed): return feed.tab
+        case .instagram(let feed): return feed.tab
         }
     }
 
@@ -115,6 +124,8 @@ final class FeedModel: ObservableObject {
             return engine.header?.handle ?? engine.route.handle ?? "tiktok"
         case .stored(let feed):
             return feed.handle
+        case .instagram(let feed):
+            return feed.handle
         }
     }
 
@@ -123,6 +134,7 @@ final class FeedModel: ObservableObject {
         case .linked: return "Post"
         case .live(_, let tab): return Self.title(for: tab)
         case .stored(let feed): return Self.title(for: feed.tab)
+        case .instagram(let feed): return Self.title(for: feed.tab)
         }
     }
 
@@ -149,6 +161,7 @@ final class FeedModel: ObservableObject {
         switch source {
         case .live(let engine, _), .linked(let engine, _): return engine.header?.avatarURL
         case .stored(let feed): return feed.store.avatarURL(feed.handle)
+        case .instagram(let feed): return IGArchive.shared.avatarURL(feed.handle)
         }
     }
 
@@ -157,6 +170,7 @@ final class FeedModel: ObservableObject {
         case .live(let engine, let tab): return engine.tabs[tab]?.items.count ?? 0
         case .linked: return 1
         case .stored(let feed): return feed.entries.count
+        case .instagram(let feed): return feed.items.count
         }
     }
 
@@ -172,6 +186,8 @@ final class FeedModel: ObservableObject {
             let entry = feed.entries[index]
             guard let thumb = entry.thumbFile else { return entry.item }
             return entry.item.withThumb(feed.store.postFolder(feed.handle, feed.tab, entry.key).appendingPathComponent(thumb).absoluteString)
+        case .instagram(let feed):
+            return feed.postItem(at: index)
         }
     }
 
@@ -222,8 +238,25 @@ final class FeedModel: ObservableObject {
         syncPlayer()
     }
 
+    /// The carousel slide on screen in each post. Instagram carousels can mix photos and videos.
+    private var slides: [Int: Int] = [:]
+
+    func showSlide(_ slide: Int, of index: Int) {
+        slides[index] = slide
+        if index == current { syncPlayer() }
+    }
+
+    /// What plays for the post in the middle: its video, or its carousel slide on screen when that is a video.
+    private var playable: URL? {
+        guard let detail = details[current] else { return nil }
+        if detail.isVideo { return detail.videoURL }
+        let urls = detail.photoURLs, slide = slides[current] ?? 0
+        guard urls.indices.contains(slide), MediaFiles.isVideoFile(urls[slide]) else { return nil }
+        return urls[slide]
+    }
+
     func syncPlayer() {
-        guard let detail = details[current], detail.isVideo, let url = detail.videoURL else {
+        guard let url = playable else {
             player.pause()
             return
         }
@@ -250,6 +283,15 @@ final class FeedModel: ObservableObject {
                 details[target] = detail
             } else {
                 failures[target] = "This post wasn't saved completely. Update the archive to fetch it again."
+            }
+            if target == current { syncPlayer() }
+            pump()
+        case .instagram(let feed):
+            if let detail = feed.detail(at: target) {
+                details[target] = detail
+                savedPosts[target] = feed.storedPost(at: target)
+            } else {
+                failures[target] = "This post's files aren't on the phone. Update the archive to fetch it again."
             }
             if target == current { syncPlayer() }
             pump()
@@ -299,6 +341,8 @@ final class FeedModel: ObservableObject {
             return LocalLibrary.find(handle: handle, tab: tab, item: item)?.post
         case .linked:
             return nil
+        case .instagram(let feed):
+            return feed.storedPost(at: index)
         }
     }
 
@@ -366,9 +410,14 @@ struct PostFeedScreen: View {
 
     private func openProfile(_ handle: String) {
         comments = nil
+        let platform = feed.platform
         Task { @MainActor in
             try? await Task.sleep(nanoseconds: 350_000_000)
-            _ = AppModel.shared.open("@" + handle)
+            if platform == .instagram {
+                AppModel.shared.openInstagram(handle)
+            } else {
+                _ = AppModel.shared.open("@" + handle)
+            }
         }
     }
 }
@@ -452,7 +501,7 @@ struct PostCard: View {
                 }
             } else if let detail, !detail.photoURLs.isEmpty {
                 Color.nvCard
-                PhotoCarousel(urls: detail.photoURLs, selection: $photoIndex)
+                PhotoCarousel(urls: detail.photoURLs, selection: $photoIndex, feed: feed, isCurrent: isCurrent)
                 if detail.photoURLs.count > 1 {
                     Text("\(photoIndex + 1)/\(detail.photoURLs.count)")
                         .font(.caption.weight(.semibold))
@@ -473,6 +522,7 @@ struct PostCard: View {
         .frame(maxWidth: .infinity)
         .aspectRatio(4.0 / 5.0, contentMode: .fit)
         .clipped()
+        .onChange(of: photoIndex) { _, slide in feed.showSlide(slide, of: index) }
     }
 
     @ViewBuilder private var pending: some View {
@@ -529,7 +579,7 @@ struct PostCard: View {
                     .foregroundStyle(Color.nvInk)
             }
             if !detail.caption.isEmpty {
-                CaptionText(handle: feed.handle, caption: detail.caption, expanded: $captionExpanded)
+                CaptionText(handle: feed.handle, caption: detail.caption, expanded: $captionExpanded, platform: feed.platform)
             }
             if detail.hasComments {
                 Button(action: onComments) {
@@ -743,15 +793,37 @@ struct InlineVideo: View {
 struct PhotoCarousel: View {
     let urls: [URL]
     @Binding var selection: Int
+    /// For carousels with video slides (Instagram): the slide on screen in the current post plays.
+    var feed: FeedModel? = nil
+    var isCurrent = false
 
     var body: some View {
         TabView(selection: $selection) {
             ForEach(Array(urls.enumerated()), id: \.offset) { offset, url in
-                RemoteImage(url, maxPixel: 1600, mode: .fit, placeholder: .clear)
+                slide(url, offset: offset)
                     .tag(offset)
             }
         }
         .tabViewStyle(.page(indexDisplayMode: .never))
+    }
+
+    @ViewBuilder private func slide(_ url: URL, offset: Int) -> some View {
+        if MediaFiles.isVideoFile(url), let feed {
+            ZStack {
+                Color.black
+                if isCurrent && selection == offset {
+                    InlineVideo(player: feed.player, poster: nil, fallbackDuration: "",
+                                onTap: { feed.toggleMute() }, onPlayPause: { feed.togglePlayback() })
+                } else {
+                    Image(systemName: "play.fill")
+                        .font(.system(size: 34))
+                        .foregroundStyle(.white.opacity(0.9))
+                        .shadow(radius: 4)
+                }
+            }
+        } else {
+            RemoteImage(url, maxPixel: 1600, mode: .fit, placeholder: .clear)
+        }
     }
 }
 
@@ -778,10 +850,11 @@ struct CaptionText: View {
     let handle: String
     let caption: String
     @Binding var expanded: Bool
+    var platform: Platform = .tiktok
 
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
-            (Text(handle + " ").fontWeight(.semibold) + Text(Self.attributed(caption)))
+            (Text(handle + " ").fontWeight(.semibold) + Text(Self.attributed(caption, platform: platform)))
                 .font(.subheadline)
                 .foregroundStyle(Color.nvInk)
                 .tint(Color.nvLink)
@@ -799,7 +872,7 @@ struct CaptionText: View {
         }
     }
 
-    static func attributed(_ caption: String) -> AttributedString {
+    static func attributed(_ caption: String, platform: Platform = .tiktok) -> AttributedString {
         var body = AttributedString(caption)
         let pattern = try? NSRegularExpression(pattern: "[#@][\\p{L}\\p{N}_.]+")
         let whole = NSRange(location: 0, length: (caption as NSString).length)
@@ -808,7 +881,9 @@ struct CaptionText: View {
                   let range = Range(stringRange, in: body) else { continue }
             body[range].foregroundColor = Color.nvLink
             let token = String(caption[stringRange])
-            if token.hasPrefix("@"), TikTokTarget.isHandle(String(token.dropFirst())), let url = URL(string: "ninjaview://" + token) {
+            let name = String(token.dropFirst())
+            let link = platform == .instagram ? "ninjaview://instagram/" + name : "ninjaview://" + token
+            if token.hasPrefix("@"), TikTokTarget.isHandle(name), let url = URL(string: link) {
                 body[range].link = url
             }
         }

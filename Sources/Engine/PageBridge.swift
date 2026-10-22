@@ -85,15 +85,21 @@ final class PageBridge: NSObject {
     /// Runs an async function body in the page and logs what it did and how long it took.
     /// Engine calls always return a JSON string.
     /// `redacting` is a set of argument keys whose values are replaced with *** in the debug log.
-    func call(_ body: String, _ arguments: [String: Any] = [:], timeout: TimeInterval = 45, redacting: Set<String> = []) async throws -> String {
+    /// `quiet` leaves the call out of the debug log (for polls that run every second or two).
+    func call(_ body: String, _ arguments: [String: Any] = [:], timeout: TimeInterval = 45, redacting: Set<String> = [],
+              quiet: Bool = false) async throws -> String {
         let name = Self.callName(body)
         let started = Date()
         do {
             let json = try await rawCall(body, arguments, timeout: timeout)
-            DebugLog.shared.add(.web, "\(name)(\(Self.describe(arguments, redacting: redacting))) took \(Self.ms(since: started)) ms, \(json.utf8.count) bytes back")
+            if !quiet {
+                DebugLog.shared.add(.web, "\(name)(\(Self.describe(arguments, redacting: redacting))) took \(Self.ms(since: started)) ms, \(json.utf8.count) bytes back")
+            }
             return json
         } catch {
-            DebugLog.shared.error(.web, "\(name)(\(Self.describe(arguments, redacting: redacting))) failed after \(Self.ms(since: started)) ms: \(error.localizedDescription)")
+            if !quiet {
+                DebugLog.shared.error(.web, "\(name)(\(Self.describe(arguments, redacting: redacting))) failed after \(Self.ms(since: started)) ms: \(error.localizedDescription)")
+            }
             throw error
         }
     }

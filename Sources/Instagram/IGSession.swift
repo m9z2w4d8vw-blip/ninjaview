@@ -133,8 +133,11 @@ final class IGSession: ObservableObject, PageBridgeDelegate {
         }
     }
 
-    /// Opens one post by code and reads its media and full comment threads.
-    func readPost(_ code: String, comments: Bool = true, maxMinutes: Double = 5, maxComments: Int = 4000) async -> IGPostDetail? {
+    /// Opens one post by code and reads its media and full comment threads. `expected` is the post's
+    /// comment count from the grid, for when the page doesn't carry it. `onProgress` gets the comments
+    /// read so far every 1.5 seconds while more are still opening.
+    func readPost(_ code: String, comments: Bool = true, maxMinutes: Double = 5, maxComments: Int = 4000,
+                  expected: Int = 0, onProgress: (@MainActor (IGCommentProgress) -> Void)? = nil) async -> IGPostDetail? {
         guard let url = URL(string: "https://www.instagram.com/p/\(code)/") else { return nil }
         bridge.loadURL(url)
         guard await bridge.waitUntilReady(timeout: 30), !Task.isCancelled else { return nil }
@@ -144,12 +147,32 @@ final class IGSession: ObservableObject, PageBridgeDelegate {
             bridge.loadURL(url)
             guard await bridge.waitUntilReady(timeout: 30), !Task.isCancelled else { return nil }
         }
+        var poll: Task<Void, Never>? = nil
+        if comments, let onProgress {
+            poll = Task { [weak self] in
+                while !Task.isCancelled {
+                    try? await Task.sleep(nanoseconds: 1_500_000_000)
+                    guard !Task.isCancelled, let self else { return }
+                    guard let json = try? await self.bridge.call("return JSON.stringify(window.__igl.snapshot());", [:], timeout: 10, quiet: true),
+                          let snap = try? JSONDecoder().decode(IGCommentProgress.self, from: Data(json.utf8)) else { continue }
+                    if !Task.isCancelled { onProgress(snap) }
+                }
+            }
+        }
+        defer { poll?.cancel() }
         do {
             let json = try await bridge.call(
-                "return JSON.stringify(await window.__igl.post({comments: c, maxComments: n, maxMs: m, waitMs: 2000, slideMs: 700, maxRounds: 500}));",
-                ["c": comments, "n": maxComments, "m": Int(maxMinutes * 60_000)], timeout: maxMinutes * 60 + 30)
+                "return JSON.stringify(await window.__igl.post({comments: c, maxComments: n, maxMs: m, waitMs: 2500, slideMs: 700, maxRounds: 800, expected: e}));",
+                ["c": comments, "n": maxComments, "m": Int(maxMinutes * 60_000), "e": expected], timeout: maxMinutes * 60 + 30)
             let detail = try bridge.decode(IGPostDetail.self, json)
             noteBlocked()
+            if comments {
+                let wanted = detail.expected ?? 0
+                let found = wanted > 0 ? "\(detail.comments.count) of \(wanted)" : "\(detail.comments.count)"
+                let how: String
+                if detail.foundAll { how = "all of them" } else if detail.exhausted == true { how = "nothing more would open" } else { how = "stopped early" }
+                DebugLog.shared.add(.web, "Instagram post \(code): \(found) comments, \(how)")
+            }
             return detail
         } catch {
             DebugLog.shared.warn(.web, "Instagram post \(code) failed: \(error.localizedDescription)")

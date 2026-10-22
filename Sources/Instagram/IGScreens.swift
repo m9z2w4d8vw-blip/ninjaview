@@ -419,7 +419,9 @@ struct IGProfileScreen: View {
     }
 }
 
-/// An Instagram archive on this iPhone: every saved post and story, viewable offline.
+/// An Instagram archive on this iPhone, laid out exactly like a TikTok archive: the header, Update /
+/// Files / more, a summary line, then posts and stories in a grid. A tile opens the same post list
+/// (and comments sheet) TikTok archives use, read entirely from the phone.
 @MainActor
 struct IGArchiveScreen: View {
     let handle: String
@@ -428,182 +430,177 @@ struct IGArchiveScreen: View {
     @ObservedObject private var creds = IGCredentials.shared
     @EnvironmentObject private var app: AppModel
     @EnvironmentObject private var downloads: DownloadCenter
-    @State private var viewer: IGViewerRequest? = nil
-    @State private var postDetail: IGArchive.Item? = nil
-    @State private var showStories = false
-    @State private var confirmDelete = false
+    @State private var tab: ProfileTab = .videos
+    @State private var confirmingDelete = false
 
     var body: some View {
         Group {
             if let account = archive.account(handle) {
-                archived(account)
+                content(account)
             } else {
-                ContentUnavailableView("No archive", systemImage: "archivebox",
-                                       description: Text("Open @\(handle) and tap Archive to save its stories and posts."))
+                ContentUnavailableView("Archive removed", systemImage: "archivebox",
+                                       description: Text("This archive was deleted from the phone."))
             }
         }
         .background(Color.nvPaper.ignoresSafeArea())
         .navigationTitle(handle)
         .navigationBarTitleDisplayMode(.inline)
-        .toolbar {
-            ToolbarItem(placement: .topBarTrailing) {
-                Menu {
-                    Button { app.openInstagram(handle) } label: { Label("Open live profile", systemImage: "person.crop.circle") }
-                    if archive.has(handle) {
-                        Button(role: .destructive) { confirmDelete = true } label: { Label("Delete archive", systemImage: "trash") }
-                    }
-                } label: {
-                    Image(systemName: "ellipsis")
-                }
-                .accessibilityLabel("More")
-            }
-        }
-        .fullScreenCover(item: $viewer) { request in
-            IGViewer(request: request)
-                .environmentObject(AvatarStore.shared)
-                .environmentObject(DownloadCenter.shared)
-        }
-        .fullScreenCover(item: $postDetail) { item in
-            IGPostDetailView(handle: handle, post: item)
-                .environmentObject(AvatarStore.shared)
-                .environmentObject(DownloadCenter.shared)
-        }
-        .confirmationDialog("Delete this archive?", isPresented: $confirmDelete, titleVisibility: .visible) {
-            Button("Delete @\(handle)", role: .destructive) { archive.delete(handle) }
+        .confirmationDialog("Delete this archive?", isPresented: $confirmingDelete, titleVisibility: .visible) {
+            Button("Delete archive", role: .destructive) { archive.delete(handle) }
         } message: {
-            Text("Its saved stories and posts will be removed from this iPhone.")
+            Text("Its saved stories, posts and comments will be removed from this iPhone.")
         }
     }
 
-    private func archived(_ account: IGArchive.Account) -> some View {
-        let items = showStories ? account.stories : account.posts
+    private func content(_ account: IGArchive.Account) -> some View {
+        let header = ProfileHeader(handle: account.handle, name: "", bio: account.bio, avatar: "", stats: account.stats)
         return ScrollView {
-            VStack(alignment: .leading, spacing: 0) {
-                InstaHeader(header: ProfileHeader(handle: account.handle, name: "", bio: account.bio, avatar: "", stats: account.stats),
-                            avatarURL: archive.avatarURL(handle), hasStories: false, onAvatarTap: {}, onStatTap: { _ in })
+            LazyVStack(alignment: .leading, spacing: 0, pinnedViews: [.sectionHeaders]) {
+                InstaHeader(header: header, avatarURL: archive.avatarURL(handle), hasStories: !account.stories.isEmpty,
+                            onAvatarTap: { open(account, .stories, 0) }, onStatTap: { _ in })
                     .padding(.horizontal, 16)
                     .padding(.top, 8)
-                HStack(spacing: 6) {
-                    Button { update() } label: {
-                        Label(archive.isWorking(handle) ? "Updating stories" : "Update stories", systemImage: "arrow.clockwise")
+                buttons()
+                    .padding(.horizontal, 16)
+                    .padding(.top, 14)
+                statusLine(account)
+                    .padding(.horizontal, 16)
+                    .padding(.top, 10)
+                Section {
+                    let feed = IGArchiveFeed(handle: handle, stories: tab == .stories, items: tab == .stories ? account.stories : account.posts)
+                    if feed.items.isEmpty {
+                        Text(tab == .stories ? "No stories were saved." : "No posts saved yet.")
+                            .font(.footnote)
+                            .foregroundStyle(Color.nvMuted)
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 44)
+                    } else {
+                        SquareGrid(items: feed.postItems(), onTap: { open(account, tab, $0) })
                     }
-                    .buttonStyle(InstaButtonStyle())
-                    .disabled(archive.isWorking(handle) || postArchiver.isRunning(handle))
-                    archivePostsButton
-                    Button { app.openInstagram(handle) } label: {
-                        Label("Live", systemImage: "person.crop.circle")
-                    }
-                    .buttonStyle(InstaButtonStyle())
-                }
-                .padding(.horizontal, 16)
-                .padding(.top, 14)
-                if postArchiver.isRunning(handle) {
-                    archiveProgress
-                } else if let status = archive.progress[account.id] {
-                    statusText(status)
-                } else if !account.note.isEmpty {
-                    statusText(account.note)
-                }
-                if !creds.isSignedIn {
-                    Text("Sign in to Instagram in Settings to archive this account's full post history and comments. Stories stay anonymous either way.")
-                        .font(.caption)
-                        .foregroundStyle(Color.nvMuted)
-                        .padding(.horizontal, 16)
-                        .padding(.top, 6)
-                } else if account.signedIn {
-                    Text("Posts and comments archived while signed in.")
-                        .font(.caption)
-                        .foregroundStyle(Color.nvMuted)
-                        .padding(.horizontal, 16)
-                        .padding(.top, 6)
-                }
-                Picker("Show", selection: $showStories) {
-                    Text("Posts (\(account.posts.count))").tag(false)
-                    Text("Stories (\(account.stories.count))").tag(true)
-                }
-                .pickerStyle(.segmented)
-                .padding(.horizontal, 16)
-                .padding(.top, 18)
-                .padding(.bottom, 10)
-                if items.isEmpty {
-                    Text(showStories ? "No stories saved yet. New ones are added every time this archive updates, so they stay after Instagram removes them."
-                                     : "No posts saved yet.")
-                        .font(.footnote)
-                        .foregroundStyle(Color.nvMuted)
-                        .padding(16)
-                } else {
-                    LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 2), count: 3), spacing: 2) {
-                        ForEach(Array(items.enumerated()), id: \.element.id) { offset, item in
-                            Button { showStories ? open(items, at: offset) : (postDetail = item) } label: {
-                                IGCell(thumb: thumb(item), isVideo: item.isVideo,
-                                       label: showStories ? item.savedAt.formatted(.dateTime.month(.abbreviated).day()) : (item.comments.isEmpty ? "" : "\(item.comments.count) \u{1F4AC}"))
-                            }
-                            .buttonStyle(.plain)
-                        }
-                    }
+                } header: {
+                    InstaTabBar(tabs: [.videos, .stories], selected: tab) { tab = $0 }
+                        .padding(.top, 14)
+                        .background(Color.nvPaper)
                 }
             }
-            .padding(.bottom, 24)
         }
     }
 
-    @ViewBuilder private var archivePostsButton: some View {
-        if postArchiver.isRunning(handle) {
-            Button { postArchiver.cancel() } label: { Label("Stop", systemImage: "stop.circle") }
-                .buttonStyle(InstaButtonStyle())
-        } else {
-            Button { archiveAllPosts() } label: {
-                Label(creds.isSignedIn ? "Archive posts" : "Posts (sign in)", systemImage: "square.grid.3x3")
-            }
-            .buttonStyle(InstaButtonStyle())
-            .disabled(!creds.isSignedIn || archive.isWorking(handle))
-        }
-    }
+    private var isWorking: Bool { archive.isWorking(handle) || postArchiver.isRunning(handle) }
 
-    private var archiveProgress: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text(postArchiver.status)
-                .font(.footnote)
-                .foregroundStyle(Color.nvInk)
-            if postArchiver.total > 0 {
-                ProgressView(value: Double(postArchiver.done), total: Double(postArchiver.total))
-                    .tint(Color.nvSignal)
+    private func buttons() -> some View {
+        HStack(spacing: 6) {
+            if postArchiver.isRunning(handle) {
+                Button { postArchiver.cancel() } label: { Label("Pause", systemImage: "pause.fill") }
+                    .buttonStyle(InstaButtonStyle())
             } else {
-                ProgressView().tint(Color.nvSignal)
+                Button { update() } label: { Label("Update archive", systemImage: "arrow.clockwise") }
+                    .buttonStyle(InstaButtonStyle())
+                    .disabled(isWorking)
             }
+            Button { showInFiles() } label: { Label("Files", systemImage: "folder") }
+                .buttonStyle(InstaButtonStyle())
+            Menu {
+                Button { Task { await export() } } label: { Label("Export as .zip", systemImage: "doc.zipper") }
+                Button { app.openInstagram(handle) } label: { Label("Open live profile", systemImage: "person.crop.circle") }
+                Button(role: .destructive) { confirmingDelete = true } label: { Label("Delete archive", systemImage: "trash") }
+            } label: {
+                Image(systemName: "chevron.down")
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(Color.nvInk)
+                    .frame(width: 34, height: 34)
+                    .background(Color.nvCard, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+            }
+            .accessibilityLabel("More")
         }
-        .padding(.horizontal, 16)
-        .padding(.top, 12)
     }
 
-    private func archiveAllPosts() {
-        Task {
-            let summary = await postArchiver.run(handle)
-            downloads.show(summary.hasPrefix("Saved") || summary.hasPrefix("@") || summary.hasPrefix("Stopped") ? .success : .failure, summary)
+    @ViewBuilder private func statusLine(_ account: IGArchive.Account) -> some View {
+        if postArchiver.isRunning(handle) {
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(spacing: 6) {
+                    Image(systemName: "archivebox")
+                    Text("Archiving: " + (postArchiver.status.isEmpty ? "starting" : postArchiver.status.lowercased()))
+                        .lineLimit(1)
+                    Spacer(minLength: 0)
+                }
+                .font(.caption)
+                .foregroundStyle(Color.nvMuted)
+                ProgressView(value: postArchiver.total > 0 ? Double(postArchiver.done) : 0,
+                             total: Double(max(postArchiver.total, 1)))
+                    .tint(Color.nvSignal)
+            }
+        } else if let status = archive.progress[account.id] {
+            Text(status)
+                .font(.caption)
+                .foregroundStyle(Color.nvMuted)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        } else {
+            Text(summary(account))
+                .font(.caption)
+                .foregroundStyle(Color.nvMuted)
+                .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
 
-    private func statusText(_ text: String) -> some View {
-        Text(text)
-            .font(.footnote)
-            .foregroundStyle(Color.nvMuted)
-            .padding(.horizontal, 16)
-            .padding(.top, 12)
+    private func summary(_ account: IGArchive.Account) -> String {
+        var parts = [plural(account.posts.count, "post", "posts"), plural(account.stories.count, "story", "stories") + " saved"]
+        let size = archive.size(handle)
+        if size > 0 { parts.append(ByteCountFormatter.string(fromByteCount: size, countStyle: .file)) }
+        var line = parts.joined(separator: ", ") + ". Updated \(account.updatedAt.formatted(.relative(presentation: .named)))."
+        let unfinished = account.posts.filter { !$0.commentsComplete }.count
+        if unfinished > 0 {
+            line += " \(plural(unfinished, "post", "posts")) still \(unfinished == 1 ? "has" : "have") comments to fetch; Update archive gets them."
+        }
+        if !account.note.isEmpty { line += " " + account.note }
+        if !creds.isSignedIn { line += " Sign in to Instagram in Settings to archive posts and their comments." }
+        return line
     }
 
-    private func thumb(_ item: IGArchive.Item) -> URL? {
-        item.isVideo ? archive.fileURL(handle, item.cover) : archive.fileURL(handle, item.file)
+    // MARK: Actions
+
+    private func open(_ account: IGArchive.Account, _ tab: ProfileTab, _ index: Int) {
+        let stories = tab == .stories
+        let items = stories ? account.stories : account.posts
+        guard items.indices.contains(index) else { return }
+        app.openPosts(.instagram(IGArchiveFeed(handle: handle, stories: stories, items: items)), index: index)
     }
 
-    private func open(_ items: [IGArchive.Item], at index: Int) {
-        viewer = IGViewerRequest.archived(items, handle: handle, stories: showStories, start: index)
-    }
-
+    /// Stories (anonymously, from the viewer site), then posts and comments (signed in).
     private func update() {
         Task {
-            let summary = await archive.update(handle)
-            downloads.show(summary.hasPrefix("Couldn't") ? .failure : .success, summary)
+            let stories = await archive.update(handle)
+            guard creds.isSignedIn else {
+                downloads.show(stories.hasPrefix("Couldn't") ? .failure : .success, stories)
+                return
+            }
+            downloads.show(stories.hasPrefix("Couldn't") ? .failure : .success, stories)
+            let posts = await postArchiver.run(handle)
+            downloads.show(posts.hasPrefix("Saved") || posts.hasPrefix("@") || posts.hasPrefix("Stopped") ? .success : .failure, posts)
         }
+    }
+
+    /// Opens the Files app at this archive's folder.
+    private func showInFiles() {
+        let path = archive.folder(handle).path
+        let encoded = path.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? path
+        if let url = URL(string: "shareddocuments://" + encoded) {
+            UIApplication.shared.open(url)
+        }
+    }
+
+    private func export() async {
+        downloads.show(.working, "Preparing the .zip\u{2026}")
+        if let zip = await ArchiveExporter.zip(archive.folder(handle), name: "NinjaView-instagram-\(handle)") {
+            downloads.show(.success, "Archive ready")
+            ShareSheet.present(zip)
+        } else {
+            downloads.show(.failure, "Couldn't make the .zip.")
+        }
+    }
+
+    private func plural(_ count: Int, _ one: String, _ many: String) -> String {
+        "\(count) \(count == 1 ? one : many)"
     }
 }
 

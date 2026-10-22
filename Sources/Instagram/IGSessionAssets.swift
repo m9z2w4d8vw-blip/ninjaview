@@ -39,7 +39,9 @@ enum IGSessionAssets {
     window.fetch = function (input, init) {
       var url = typeof input === 'string' ? input : (input && input.url) || '';
       if (isStoryRequest(url, init && init.body)) { note('fetch ' + url.slice(0, 120)); return Promise.reject(new TypeError('blocked by NinjaView')); }
-      return realFetch.apply(this, arguments).then(function (res) { capture(url, res); return res; });
+      var finish = track(url);
+      return realFetch.apply(this, arguments).then(function (res) { finish(); capture(url, res); return res; },
+                                                   function (err) { finish(); throw err; });
     };
   }
   var XO = XMLHttpRequest.prototype.open, XS = XMLHttpRequest.prototype.send;
@@ -47,6 +49,7 @@ enum IGSessionAssets {
   XMLHttpRequest.prototype.send = function (body) {
     if (isStoryRequest(this.__iglUrl, body)) { note('xhr ' + String(this.__iglUrl).slice(0, 120)); try { this.abort(); } catch (e) {} return; }
     var xhr = this;
+    xhr.addEventListener('loadend', track(this.__iglUrl));
     xhr.addEventListener('load', function () {
       try {
         var api = /graphql|\/api\/v1\//.test(String(xhr.__iglUrl || ''));
@@ -78,6 +81,15 @@ enum IGSessionAssets {
       if (e.target && e.target.nodeType === 1 && storyTarget(e.target)) { e.preventDefault(); e.stopImmediatePropagation(); if (type === 'click') note('click ' + (e.target.getAttribute('aria-label') || e.target.tagName)); }
     }, true);
   });
+
+  // ---------- Instagram's requests in flight ----------
+  var pending = 0;
+  function track(url) {
+    if (!/graphql|\/api\/v1\//.test(String(url || ''))) return function () {};
+    pending++;
+    var done = false;
+    return function () { if (!done) { done = true; pending = Math.max(0, pending - 1); } };
+  }
 
   // ---------- Instagram's own data: its API answers and the JSON embedded in each page ----------
   // Posts and comments are read from here first; the page's markup is only a fallback.
@@ -203,7 +215,12 @@ enum IGSessionAssets {
   function qa(s, r) { return Array.prototype.slice.call((r || document).querySelectorAll(s)); }
   function squash(s) { return String(s || '').replace(/\s+/g, ' ').trim(); }
   function text(el) { return el ? squash(el.textContent) : ''; }
-  function longText(el) { return el ? String(el.innerText || el.textContent || '').replace(/[ \t]+/g, ' ').replace(/\n{3,}/g, '\n\n').trim() : ''; }
+  // innerText keeps <br> line breaks but costs a layout per call, so it's only used where there are some.
+  function longText(el) {
+    if (!el) return '';
+    var raw = el.querySelector('br') ? (el.innerText || el.textContent) : el.textContent;
+    return String(raw || '').replace(/[ \t]+/g, ' ').replace(/\n{3,}/g, '\n\n').trim();
+  }
   function visible(el) {
     if (!el || !el.isConnected) return false;
     for (var n = el; n && n.nodeType === 1; n = n.parentElement) { var cs = getComputedStyle(n); if (cs.display === 'none' || cs.visibility === 'hidden') return false; }
@@ -360,19 +377,27 @@ enum IGSessionAssets {
   var postGen = 0;   // a newer post() or cancel() stops an older one at its next step
   function postRoot() {
     var d = q('[role="dialog"] article') || q('[role="dialog"]');
-    return d || q('main article') || q('main') || document.body;
+    if (d) return d;
+    // A post opened as its own page: its article if that holds the comments, else the whole page.
+    var art = qa('main article').filter(function (a) {
+      return q('a[href*="/c/"] time', a) || q('svg[aria-label="Load more comments"]', a);
+    })[0];
+    return art || q('main') || document.body;
   }
   function commentTimes(root) { return qa('a[href*="/c/"] time', root); }
   function readComments(root) {
-    var out = [], seen = {};
-    commentTimes(root).forEach(function (t) {
+    var out = [], seen = {}, times = commentTimes(root), under = new Map();
+    times.forEach(function (t) {
+      for (var n = t.parentElement; n && n !== root; n = n.parentElement) under.set(n, (under.get(n) || 0) + 1);
+    });
+    times.forEach(function (t) {
       var a = t.closest('a'), m = (a.getAttribute('href') || '').match(/\/c\/(\d+)(?:\/r\/(\d+))?/);
       if (!m) return;
       var id = m[2] || m[1], parent = m[2] ? m[1] : '';
       if (seen[id]) return;
       seen[id] = true;
       var box = a;
-      while (box.parentElement && box.parentElement !== root && commentTimes(box.parentElement).length === 1) box = box.parentElement;
+      while (box.parentElement && box.parentElement !== root && under.get(box.parentElement) === 1) box = box.parentElement;
       var h3 = q('h3', box);
       var author = h3 ? text(q('a', h3)) || text(h3) : '';
       var body = qa('span[dir="auto"]', box).filter(function (s) { return !(h3 && h3.contains(s)) && !s.closest('span[dir="ltr"]'); })[0];
@@ -452,32 +477,76 @@ enum IGSessionAssets {
     var pick = own || outside[outside.length - 1];
     return pick ? pick.getAttribute('datetime') || '' : '';
   }
+  // Every comment and reply on the page plus every one the API has sent: grows whenever anything loads.
+  function commentProgress(root) { return commentTimes(root).length + Object.keys(comments).length; }
+  // The comment list scrolls on its own; reaching its end is what makes Instagram load the next batch.
+  function commentScroller(root) {
+    var t = commentTimes(root)[0];
+    for (var n = t && t.parentElement; n && n !== document.documentElement; n = n.parentElement) {
+      var oy = getComputedStyle(n).overflowY;
+      if ((oy === 'auto' || oy === 'scroll') && n.scrollHeight > n.clientHeight + 2) return n;
+    }
+    return null;
+  }
+  function scrollComments(root) {
+    var s = commentScroller(root);
+    if (s) { s.scrollTop = s.scrollHeight; s.dispatchEvent(new Event('scroll')); }
+    else { window.scrollTo(0, document.documentElement.scrollHeight); window.dispatchEvent(new Event('scroll')); }
+    var times = commentTimes(root), last = times[times.length - 1];
+    if (last) { try { last.scrollIntoView({ block: 'end' }); } catch (e) {} }
+  }
+  // Waits for something new: at least `wait`, and longer (up to 4x) while a request is still out.
+  async function settle(root, before, wait, gen) {
+    var start = Date.now(), hard = start + wait * 4;
+    await sleep(150);
+    while (gen === postGen) {
+      if (commentProgress(root) !== before) { await sleep(350); return true; }   // the rest of the batch renders
+      var now = Date.now();
+      if (now >= hard || (now >= start + wait && pending === 0)) return false;
+      await sleep(150);
+    }
+    return false;
+  }
+  // Opens every reply thread and presses "Load more comments" (+) until nothing is left, scrolling the
+  // list to its end in between. `exhausted` is true only when no control is left and two scrolls in a row
+  // brought nothing; stopping for time, the limit, a newer post() or a control that keeps failing leaves it false.
   async function expand(root, opts, gen) {
     var limit = opts.maxComments || 3000, deadline = Date.now() + (opts.maxMs || 5 * 60 * 1000), wait = opts.waitMs || 2000;
-    var rounds = 0, tries = new WeakMap();
-    function fresh(b) { return !!b && (tries.get(b) || 0) < 2; }   // a control that did nothing twice is skipped
-    while (gen === postGen && Date.now() < deadline && rounds < (opts.maxRounds || 400)) {
+    var rounds = 0, idle = 0, tries = new WeakMap(), exhausted = false;
+    function fresh(b) { return !!b && (tries.get(b) || 0) < 3; }   // a control that did nothing 3 times is skipped
+    while (gen === postGen && Date.now() < deadline && rounds < (opts.maxRounds || 600)) {
       dismissPrompts();
-      var target = threadControls(root).filter(fresh)[0] || [moreControl(root)].filter(fresh)[0];
-      if (!target || commentTimes(root).length >= limit) break;
-      var before = commentTimes(root).length;
-      target.click();
-      var until = Date.now() + wait;
-      while (gen === postGen && Date.now() < until && commentTimes(root).length === before && target.isConnected && visible(target)) await sleep(200);
-      if (commentTimes(root).length === before) tries.set(target, (tries.get(target) || 0) + 1);
+      if (commentTimes(root).length >= limit) break;
+      var threads = threadControls(root), more = moreControl(root);
+      var target = threads.filter(fresh)[0] || [more].filter(fresh)[0];
+      var before = commentProgress(root);
+      if (target) {
+        try { target.scrollIntoView({ block: 'center' }); } catch (e) {}
+        target.click();
+        if (!(await settle(root, before, wait, gen))) tries.set(target, (tries.get(target) || 0) + 1);
+        idle = 0;
+      } else {
+        if (threads.length || more) break;   // only controls that keep failing are left: not finished
+        scrollComments(root);
+        if (await settle(root, before, wait, gen)) idle = 0;
+        else if (++idle >= 2) { exhausted = true; break; }
+      }
       rounds++;
       if (rounds % 10 === 0) post('progress', { stage: 'comments', found: commentTimes(root).length });
     }
-    return rounds;
+    return { rounds: rounds, exhausted: exhausted };
+  }
+  function currentCode(root) {
+    var here = codeFrom(location.pathname) || codeFrom((q('a[href*="/p/"] time', root) || {}).parentElement && q('a[href*="/p/"] time', root).parentElement.getAttribute('href'));
+    return here ? here.code : '';
   }
   async function readPost(opts) {
     opts = opts || {};
     var gen = ++postGen;
     readEmbedded();
     var root = postRoot();
-    var here = codeFrom(location.pathname) || codeFrom((q('a[href*="/p/"] time', root) || {}).parentElement && q('a[href*="/p/"] time', root).parentElement.getAttribute('href'));
-    var code = here ? here.code : '';
-    var rounds = opts.comments === false ? 0 : await expand(root, opts, gen);
+    var code = currentCode(root);
+    var ex = opts.comments === false ? { rounds: 0, exhausted: false } : await expand(root, opts, gen);
     readEmbedded();
     var net = media[code], found = [];
     if (!(net && net.items.length)) {
@@ -494,6 +563,9 @@ enum IGSessionAssets {
     var likesText = qa('a, span', root).filter(function (el) { return !el.closest('button') && !el.closest('li') && /^[\d.,KM]+\s+likes?$/i.test(text(el)); }).map(text)[0] || '';
     var authorLink = qa('header a[href]', root).filter(function (a) { return /^\/?[\w.]+\/?$/.test((a.getAttribute('href') || '').replace(/^https:\/\/www\.instagram\.com/, '')) && text(a); })[0];
     var useNet = !!(net && net.items.length);
+    var list = opts.comments === false ? [] : mergeComments(readComments(root), code);
+    // Instagram's own count for the post (the number its grid shows on hover), to check against.
+    var expected = (net && net.comments) || opts.expected || 0;
     return {
       code: code, author: authorLink ? text(authorLink) : (net ? net.owner : ''),
       caption: longText(captionRow) || (net ? net.caption : ''),
@@ -501,9 +573,16 @@ enum IGSessionAssets {
       likes: likesText ? count(likesText) : (net ? net.likes : 0),
       media: useNet ? net.items.map(function (x) { return { image: x.image, video: x.video, alt: x.alt, width: x.width, height: x.height }; }) : found,
       mediaFrom: useNet ? 'network' : 'page',
-      comments: opts.comments === false ? [] : mergeComments(readComments(root), code),
-      expandRounds: rounds
+      comments: list, expandRounds: ex.rounds,
+      expected: expected, exhausted: ex.exhausted,
+      complete: opts.comments !== false && ex.exhausted && (!expected || list.length >= expected)
     };
+  }
+  // The comments loaded so far, while post() is still opening more.
+  function snapshot() {
+    var root = postRoot(), code = currentCode(root), net = media[code];
+    var list = mergeComments(readComments(root), code);
+    return { comments: list, expected: (net && net.comments) || 0, found: list.length };
   }
   function probe() {
     var r = postRoot();
@@ -511,7 +590,7 @@ enum IGSessionAssets {
              posts: Object.keys(media).length, apiComments: Object.keys(comments).length };
   }
 
-  window.__igl = { state: state, login: login, dismissPrompts: dismissPrompts, grid: grid, post: readPost, probe: probe,
+  window.__igl = { state: state, login: login, dismissPrompts: dismissPrompts, grid: grid, post: readPost, probe: probe, snapshot: snapshot,
                    cancel: function () { postGen++; return 'ok'; },
                    ingest: function (o) { walk(o, 0, 0, ''); return Object.keys(media).length; },
                    blocked: function () { return blocked.slice(); }, media: function () { return media; } };

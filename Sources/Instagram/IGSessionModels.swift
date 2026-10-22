@@ -91,4 +91,19 @@ struct IGPostDetail: Codable {
     let mediaFrom: String
     let comments: [IGComment]
     let expandRounds: Int
+    /// Instagram's own comment count for the post (what its grid shows on hover); 0 when unknown.
+    var expected: Int? = nil
+    /// Nothing was left to open: no reply thread, no "Load more comments", and scrolling brought nothing.
+    var exhausted: Bool? = nil
+    /// Nothing was left to open and at least `expected` comments were read.
+    var complete: Bool? = nil
+
+    var foundAll: Bool { complete == true }
+}
+
+/// The comments read so far while a post is still opening more.
+struct IGCommentProgress: Codable {
+    let comments: [IGComment]
+    let expected: Int
+    let found: Int
 }

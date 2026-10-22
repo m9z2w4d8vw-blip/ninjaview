@@ -90,9 +90,11 @@ final class IGLiveGridModel: ObservableObject {
         await load(handle)
     }
 
-    /// One post's comments (and its media, when the grid didn't have them). A newer call, or
-    /// `cancelPost()`, stops an older one, so switching posts never waits for the last one's comments.
-    func loadPost(_ code: String) async -> IGPostDetail? {
+    /// One post's comments (and its media, when the grid didn't have them). `expected` is the post's
+    /// comment count from the grid; `onProgress` gets the comments read so far while more open. A newer
+    /// call, or `cancelPost()`, stops an older one, so switching posts never waits for the last one's comments.
+    func loadPost(_ code: String, expected: Int = 0,
+                  onProgress: (@MainActor (IGCommentProgress) -> Void)? = nil) async -> IGPostDetail? {
         guard IGCredentials.shared.isSignedIn else { return nil }
         postGeneration += 1
         let mine = postGeneration
@@ -100,7 +102,10 @@ final class IGLiveGridModel: ObservableObject {
         await s.cancelPost()
         let detail = try? await runner.run { [weak self] () -> IGPostDetail? in
             guard let self, mine == self.postGeneration else { return nil }
-            return await s.readPost(code, comments: true, maxMinutes: 1, maxComments: 300)
+            return await s.readPost(code, comments: true, maxMinutes: 4, maxComments: 2000, expected: expected) { [weak self] snap in
+                guard let self, mine == self.postGeneration else { return }
+                onProgress?(snap)
+            }
         }
         guard mine == postGeneration else { return nil }
         return detail
@@ -138,6 +143,8 @@ struct IGLivePostSheet: View {
     @EnvironmentObject private var downloads: DownloadCenter
     @StateObject private var player = ClipPlayer()
     @State private var detail: IGPostDetail? = nil
+    /// The comments read so far, shown while more are still opening.
+    @State private var partial: IGCommentProgress? = nil
     @State private var loadingComments = true
     @State private var page = 0
     @State private var captionExpanded = false
@@ -149,7 +156,13 @@ struct IGLivePostSheet: View {
     }
     private var likes: Int { max(item.likes ?? 0, detail?.likes ?? 0) }
     private var date: Date? { item.takenDate ?? IGTime.parse(detail?.date) }
-    private var comments: [IGComment] { detail?.comments ?? [] }
+    /// Whichever is longer: the last finished read, or the one still opening (so a retry shows progress too).
+    private var comments: [IGComment] {
+        let finished = detail?.comments ?? [], soFar = partial?.comments ?? []
+        return soFar.count > finished.count ? soFar : finished
+    }
+    /// Instagram's own count for the post (what its grid shows on hover).
+    private var expectedComments: Int { max(item.comments ?? 0, detail?.expected ?? 0, partial?.expected ?? 0) }
     private var current: IGMedia? { slides.indices.contains(page) ? slides[page] : nil }
 
     var body: some View {
@@ -327,8 +340,8 @@ struct IGLivePostSheet: View {
                 Text("Comments")
                     .font(.subheadline.weight(.semibold))
                     .foregroundStyle(Color.nvInk)
-                if let total = item.comments, total > 0 {
-                    Text(total.formatted())
+                if expectedComments > 0 {
+                    Text(expectedComments.formatted())
                         .font(.subheadline)
                         .foregroundStyle(Color.nvMuted)
                 }
@@ -336,16 +349,9 @@ struct IGLivePostSheet: View {
             }
             .padding(.horizontal, 14)
             .padding(.vertical, 10)
-            if loadingComments {
-                HStack(spacing: 8) {
-                    ProgressView()
-                    Text("Loading comments\u{2026}")
-                        .font(.footnote)
-                        .foregroundStyle(Color.nvMuted)
-                }
-                .padding(.horizontal, 14)
-                .padding(.vertical, 6)
-            } else if detail == nil {
+            if loadingComments && comments.isEmpty {
+                loadingRow
+            } else if !loadingComments && detail == nil {
                 VStack(alignment: .leading, spacing: 8) {
                     Text("The comments didn't load.")
                         .font(.footnote)
@@ -367,8 +373,42 @@ struct IGLivePostSheet: View {
                         IGLiveCommentRow(comment: reply, indent: true)
                     }
                 }
+                if loadingComments {
+                    loadingRow
+                } else if let note = shortfallNote {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text(note)
+                            .font(.footnote)
+                            .foregroundStyle(Color.nvMuted)
+                        Button("Try again") { Task { await loadComments() } }
+                            .font(.footnote.weight(.semibold))
+                            .foregroundStyle(Color.nvInk)
+                    }
+                    .padding(.horizontal, 14)
+                    .padding(.top, 8)
+                }
             }
         }
+    }
+
+    private var loadingRow: some View {
+        HStack(spacing: 8) {
+            ProgressView()
+            Text(expectedComments > 0 ? "Loading comments\u{2026} \(comments.count) of \(expectedComments)" : "Loading comments\u{2026}")
+                .font(.footnote)
+                .foregroundStyle(Color.nvMuted)
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 6)
+    }
+
+    /// Said when fewer comments came back than Instagram counts for the post.
+    private var shortfallNote: String? {
+        guard let detail, !detail.foundAll, expectedComments > comments.count else { return nil }
+        let because = detail.exhausted == true
+            ? "Instagram didn't show the rest; some may be hidden or deleted."
+            : "Loading stopped before the end."
+        return "Showing \(comments.count) of \(expectedComments) comments. " + because
     }
 
     // MARK: Actions
@@ -380,7 +420,9 @@ struct IGLivePostSheet: View {
 
     private func loadComments() async {
         loadingComments = true
-        if let result = await model.loadPost(item.code) { detail = result }
+        partial = nil
+        let result = await model.loadPost(item.code, expected: item.comments ?? 0) { snap in partial = snap }
+        if let result { detail = result }
         loadingComments = false
         syncPlayer()
     }

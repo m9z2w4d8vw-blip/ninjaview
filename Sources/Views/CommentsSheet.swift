@@ -39,6 +39,8 @@ final class CommentsModel: ObservableObject {
             note = saved?.commentsNote ?? ""
             if let missing = saved?.repliesMissing, missing > 0 {
                 footnote = "Replies to \(missing) \(missing == 1 ? "comment" : "comments") didn't load when this was saved. Updating the archive tries them again."
+            } else if let missing = saved?.commentsMissing, missing > 0 {
+                footnote = "\(missing) \(missing == 1 ? "comment" : "comments") didn't load when this was saved. Updating the archive tries again."
             }
             isLoading = false
             exhausted = true

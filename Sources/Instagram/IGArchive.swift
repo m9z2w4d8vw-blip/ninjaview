@@ -35,6 +35,12 @@ final class IGArchive: ObservableObject {
         var takenAt: String = ""
         /// Comments and replies saved with a post (signed-in archiving only).
         var comments: [StoredComment] = []
+        /// Instagram's own comment count when the post was saved (0 when unknown).
+        var commentCount: Int = 0
+        /// Every comment was opened when this was saved, or a re-check found nothing more to open.
+        var commentsComplete: Bool = false
+        /// Comments Instagram counts that aren't saved yet.
+        var commentsMissing: Int { max(0, commentCount - comments.count) }
 
         var id: String { kind + ":" + key }
         var isVideo: Bool { media == "video" }
@@ -46,6 +52,7 @@ final class IGArchive: ObservableObject {
         private enum CodingKeys: String, CodingKey {
             // `file` is read for backward compatibility (decode) but never written; `files` replaces it.
             case key, kind, media, files, file, cover, original, savedAt, caption, likes, takenAt, comments
+            case commentCount, commentsComplete
         }
 
         func encode(to encoder: Encoder) throws {
@@ -61,13 +68,17 @@ final class IGArchive: ObservableObject {
             try c.encode(likes, forKey: .likes)
             try c.encode(takenAt, forKey: .takenAt)
             try c.encode(comments, forKey: .comments)
+            try c.encode(commentCount, forKey: .commentCount)
+            try c.encode(commentsComplete, forKey: .commentsComplete)
         }
 
         init(key: String, kind: String, media: String, files: [String], cover: String, original: String,
-             savedAt: Date, caption: String = "", likes: Int = 0, takenAt: String = "", comments: [StoredComment] = []) {
+             savedAt: Date, caption: String = "", likes: Int = 0, takenAt: String = "", comments: [StoredComment] = [],
+             commentCount: Int = 0, commentsComplete: Bool = false) {
             self.key = key; self.kind = kind; self.media = media; self.files = files; self.cover = cover
             self.original = original; self.savedAt = savedAt; self.caption = caption; self.likes = likes
             self.takenAt = takenAt; self.comments = comments
+            self.commentCount = commentCount; self.commentsComplete = commentsComplete
         }
 
         /// Tolerant decode: archives written before carousels/comments stored a single `file`.
@@ -90,6 +101,8 @@ final class IGArchive: ObservableObject {
             likes = (try? c.decode(Int.self, forKey: .likes)) ?? 0
             takenAt = (try? c.decode(String.self, forKey: .takenAt)) ?? ""
             comments = (try? c.decode([StoredComment].self, forKey: .comments)) ?? []
+            commentCount = (try? c.decode(Int.self, forKey: .commentCount)) ?? 0
+            commentsComplete = (try? c.decode(Bool.self, forKey: .commentsComplete)) ?? false
         }
     }
 
@@ -281,8 +294,9 @@ final class IGArchive: ObservableObject {
         return saved
     }
 
-    /// Saves one post read by the signed-in session: all carousel media plus the full comment
-    /// threads. Replaces an existing copy of the same post (to add comments gathered later).
+    /// Saves one post read by the signed-in session: all carousel media plus the full comment threads.
+    /// A post saved before keeps its files (only its comments are refreshed), and its comments are merged,
+    /// so a read that loaded fewer never loses any.
     func absorbSignedInPost(_ handle: String, grid: IGGridItem, detail: IGPostDetail, profileTotal: Int) async -> Bool {
         let key = handle.lowercased()
         let dir = folder(key)
@@ -292,43 +306,61 @@ final class IGArchive: ObservableObject {
             DebugLog.shared.error(.store, "Couldn't create the Instagram archive for @\(handle): \(error.localizedDescription)")
             return false
         }
+        let postKey = detail.code.isEmpty ? grid.code : detail.code
+        let existing = accounts[key]?.posts.first { $0.key == postKey }
         var files: [String] = []
         var cover = ""
-        let base = "post-" + Self.safe(detail.code.isEmpty ? grid.code : detail.code)
-        let media = detail.media.isEmpty ? [] : detail.media
         var anyVideo = false
-        for (i, m) in media.enumerated() {
-            guard let url = m.mediaURL, let temp = await fetchFile(url) else { continue }
-            let ext = Self.fileExtension(of: temp, media: m.isVideo ? "video" : "image", filename: "")
-            let name = media.count > 1 ? "\(base)-\(i + 1).\(ext)" : "\(base).\(ext)"
-            let target = dir.appendingPathComponent(name)
-            do {
-                if FileManager.default.fileExists(atPath: target.path) { try FileManager.default.removeItem(at: target) }
-                try FileManager.default.moveItem(at: temp, to: target)
-                files.append(name)
-            } catch {
-                DebugLog.shared.warn(.store, "Couldn't keep an Instagram post file: \(error.localizedDescription)")
-                continue
-            }
-            if (ext == "mp4" || ext == "mov"), cover.isEmpty, let poster = m.posterURL, let data = await fetchData(poster) {
-                let coverName = base + "-cover.jpg"
-                if (try? data.write(to: dir.appendingPathComponent(coverName), options: .atomic)) != nil { cover = coverName }
-                anyVideo = true
-            } else if ext == "mp4" || ext == "mov" {
-                anyVideo = true
+        if let existing, !existing.files.isEmpty,
+           existing.files.allSatisfy({ FileManager.default.fileExists(atPath: dir.appendingPathComponent($0).path) }) {
+            files = existing.files
+            cover = existing.cover
+            anyVideo = existing.isVideo || existing.files.contains { MediaFiles.isVideoFile(name: $0) }
+        } else {
+            let base = "post-" + Self.safe(postKey)
+            let media = detail.media
+            for (i, m) in media.enumerated() {
+                guard let url = m.mediaURL, let temp = await fetchFile(url) else { continue }
+                let ext = Self.fileExtension(of: temp, media: m.isVideo ? "video" : "image", filename: "")
+                let name = media.count > 1 ? "\(base)-\(i + 1).\(ext)" : "\(base).\(ext)"
+                let target = dir.appendingPathComponent(name)
+                do {
+                    if FileManager.default.fileExists(atPath: target.path) { try FileManager.default.removeItem(at: target) }
+                    try FileManager.default.moveItem(at: temp, to: target)
+                    files.append(name)
+                } catch {
+                    DebugLog.shared.warn(.store, "Couldn't keep an Instagram post file: \(error.localizedDescription)")
+                    continue
+                }
+                if ext == "mp4" || ext == "mov" {
+                    anyVideo = true
+                    if cover.isEmpty, let poster = m.posterURL, let data = await fetchData(poster) {
+                        let coverName = base + "-cover.jpg"
+                        if (try? data.write(to: dir.appendingPathComponent(coverName), options: .atomic)) != nil { cover = coverName }
+                    }
+                }
             }
         }
         guard !files.isEmpty else {
             DebugLog.shared.warn(.store, "Instagram post \(detail.code) had no saveable media")
             return false
         }
-        let comments = detail.comments.map { c in
+        let read = detail.comments.map { c in
             StoredComment(id: c.id, parent: c.parent, author: c.author, verified: c.verified, text: c.text, time: c.time, likes: c.likes)
         }
-        let item = Item(key: detail.code.isEmpty ? grid.code : detail.code, kind: "post",
+        let comments = Self.mergeComments(existing?.comments ?? [], read)
+        let expected = max(detail.expected ?? 0, grid.comments ?? 0, existing?.commentCount ?? 0)
+        // Done when everything opened and the count is met; a re-check that opened everything and found
+        // nothing new also counts (Instagram's count includes comments it never shows, such as hidden ones).
+        let nothingNew = existing.map { comments.count <= $0.comments.count } ?? false
+        let complete = detail.foundAll || (detail.exhausted == true && (expected == 0 || comments.count >= expected || nothingNew))
+        let item = Item(key: postKey, kind: "post",
                         media: anyVideo && files.count == 1 ? "video" : (grid.video && files.count == 1 ? "video" : "image"),
-                        files: files, cover: cover, original: "", savedAt: Date(),
-                        caption: detail.caption, likes: detail.likes, takenAt: detail.date, comments: comments)
+                        files: files, cover: cover, original: "", savedAt: existing?.savedAt ?? Date(),
+                        caption: detail.caption.isEmpty ? (existing?.caption ?? "") : detail.caption,
+                        likes: max(detail.likes, existing?.likes ?? 0),
+                        takenAt: detail.date.isEmpty ? (existing?.takenAt ?? "") : detail.date,
+                        comments: comments, commentCount: expected, commentsComplete: complete)
 
         let now = Date()
         var account = accounts[key] ?? Account(handle: detail.author.isEmpty ? handle : detail.author, bio: "", stats: [],
@@ -341,8 +373,21 @@ final class IGArchive: ObservableObject {
         account.updatedAt = Date()
         accounts[key] = account
         write(account)
-        DebugLog.shared.add(.store, "Saved Instagram post \(item.key) of @\(handle): \(files.count) file(s), \(comments.count) comments")
+        let count = expected > 0 ? "\(comments.count) of \(expected)" : "\(comments.count)"
+        DebugLog.shared.add(.store, "Saved Instagram post \(item.key) of @\(handle): \(files.count) file(s), \(count) comments\(complete ? "" : ", more to fetch next time")")
         return true
+    }
+
+    /// Two reads of one post's comments: keep every comment either one saw.
+    nonisolated static func mergeComments(_ old: [StoredComment], _ new: [StoredComment]) -> [StoredComment] {
+        guard !old.isEmpty else { return new }
+        var seen = Set(new.map(\.id))
+        var out = new
+        for c in old where !seen.contains(c.id) {
+            out.append(c)
+            seen.insert(c.id)
+        }
+        return out
     }
 
     /// Records that an account has been archived signed-in, and refreshes its header fields.

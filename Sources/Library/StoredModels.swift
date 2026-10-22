@@ -33,6 +33,8 @@ struct StoredPost: Codable {
     var savedAt: Date
     /// Reply threads that wouldn't open when this was saved (nil for posts saved before this was counted).
     var repliesMissing: Int? = nil
+    /// Comments the site counts that weren't saved (Instagram archives; nil when none or unknown).
+    var commentsMissing: Int? = nil
 }
 
 extension StoredPost {

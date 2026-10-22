@@ -69,6 +69,12 @@ enum MediaSniffer {
 }
 
 enum MediaFiles {
+    private static let videoExtensions: Set<String> = ["mp4", "mov", "m4v"]
+
+    /// A saved or local video, by its file name (carousels can mix photos and videos).
+    static func isVideoFile(name: String) -> Bool { videoExtensions.contains((name as NSString).pathExtension.lowercased()) }
+    static func isVideoFile(_ url: URL) -> Bool { videoExtensions.contains(url.pathExtension.lowercased()) }
+
     static var folder: URL {
         FileManager.default.temporaryDirectory.appendingPathComponent("NinjaView", isDirectory: true)
     }
