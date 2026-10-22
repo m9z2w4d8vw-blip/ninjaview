@@ -21,7 +21,11 @@ enum IGSessionAssets {
 
   // ---------- Guard: stories and highlights are off limits ----------
   var STORY_URL = /\/stories\/|\/highlights?\/|reels_media|reels_tray|reel\/seen|story_?viewer|highlight/i;
-  var STORY_QUERY = /Stor(y|ies)|Highlight|ReelsTray|ReelsMedia|SeenMutation/i;
+  // Only block operations that directly view or mark stories as seen.
+  // Broad keyword matching (Highlight, ReelsMedia, Story…) was intercepting Instagram's
+  // session-verification GraphQL call, causing an immediate redirect to the login page
+  // every time a profile was loaded while already signed in.
+  var STORY_QUERY = /\bReelsTray\b|\bSeenMutation\b/i;
   function isStoryRequest(url, body) {
     if (STORY_URL.test(String(url || ''))) return true;
     var b = typeof body === 'string' ? body : '';
@@ -175,14 +179,57 @@ enum IGSessionAssets {
   }
 
   // ---------- Profile grid: scroll to the very end ----------
+
+  // Instagram CDN thumbnail URLs embed the numeric media ID: .../MEDIAID_N_n.jpg
+  // That ID is a base-62 (Instagram alphabet) encoding of the shortcode, so we can
+  // reverse it to get the post code without needing a href on the grid anchor.
+  function codeFromCDN(url) {
+    var m = String(url || '').match(/\/(\d{15,20})_\d/);
+    if (!m) return null;
+    try {
+      var alpha = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-';
+      var n = BigInt(m[1]), code = '';
+      while (n > 0n) { code = alpha[Number(n % 64n)] + code; n = n / 64n; }
+      return code || null;
+    } catch (e) { return null; }
+  }
+
+  // Three sources, in order of reliability:
+  //   1. walk()-intercepted GraphQL API responses  (best: includes media URLs + metadata)
+  //   2. CDN URL shortcode decoding                (works for SSR-embedded thumbnails)
+  //   3. Legacy href="/p/CODE/" anchors            (pre-2025 Instagram)
   function gridCodes(found) {
+    // Source 1 — posts collected from API responses by walk()
+    for (var code in media) {
+      if (!found.has(code)) {
+        var m = media[code];
+        var items = m.items || [];
+        found.set(code, { code: code,
+          kind: items.some(function (i) { return !!i.video; }) ? 'reel' : 'p',
+          thumb: items[0] ? (items[0].image || '') : '',
+          pinned: false, multi: items.length > 1,
+          video: items.some(function (i) { return !!i.video; }) });
+      }
+    }
+    // Source 2 — decode shortcode from CDN thumbnail URL (Instagram 2025+: no href on grid anchors)
+    qa('main a').forEach(function (a) {
+      if (a.closest('[role="dialog"]')) return;
+      var img = q('img', a);
+      if (!img) return;
+      var src = img.currentSrc || img.getAttribute('src') || '';
+      if (!/^https?:/i.test(src)) return;
+      var code = codeFromCDN(src);
+      if (!code || found.has(code)) return;
+      found.set(code, { code: code, kind: 'p', thumb: src, pinned: false, multi: false, video: false });
+    });
+    // Source 3 — legacy href="/p/CODE/" (Instagram before ~2025)
     qa('main a[href]').forEach(function (a) {
       if (a.closest('[role="dialog"]')) return;
       var c = codeFrom(a.getAttribute('href'));
       if (!c || found.has(c.code)) return;
       found.set(c.code, { code: c.code, kind: c.kind, thumb: imgURL(q('img', a)),
-                          pinned: !!q('svg[aria-label*="Pinned"]', a), multi: !!q('svg[aria-label="Carousel"]', a),
-                          video: !!q('svg[aria-label="Clip"], svg[aria-label="Reel"], svg[aria-label="Video"]', a) });
+        pinned: !!q('svg[aria-label*="Pinned"]', a), multi: !!q('svg[aria-label="Carousel"]', a),
+        video: !!q('svg[aria-label="Clip"], svg[aria-label="Reel"], svg[aria-label="Video"]', a) });
     });
     return found;
   }
@@ -197,8 +244,12 @@ enum IGSessionAssets {
     while (Date.now() < budget && idle < idleWanted && (!total || found.size < total)) {
       dismissPrompts();
       var before = found.size;
+      // Scroll to the bottom to trigger Instagram's infinite-scroll API calls.
+      // In current Instagram there are no href links on grid items; fall back to
+      // scrolling the last <a> in main (still a grid cell, just without href).
       var links = qa('main a[href*="/p/"], main a[href*="/reel/"]');
-      if (links.length) links[links.length - 1].scrollIntoView({ block: 'end' });
+      var scrollTarget = links.length ? links : qa('main a');
+      if (scrollTarget.length) scrollTarget[scrollTarget.length - 1].scrollIntoView({ block: 'end' });
       window.scrollTo(0, document.documentElement.scrollHeight);
       var until = Date.now() + wait;
       while (Date.now() < until) { await sleep(250); gridCodes(found); if (found.size > before) break; }

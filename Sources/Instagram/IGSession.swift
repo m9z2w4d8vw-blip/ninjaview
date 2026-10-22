@@ -152,7 +152,15 @@ final class IGSession: ObservableObject, PageBridgeDelegate {
         guard let url = IGLinks.instagram(handle) else { return false }
         bridge.loadURL(url)
         guard await bridge.waitUntilReady(timeout: 30) else { fail("The profile didn't load."); return false }
-        return await confirmSignedIn()
+        guard await confirmSignedIn() else { return false }
+        // A sign-in redirects to instagram.com/ (home), not back to the profile.
+        // If we're no longer on the profile page, reload it before running the grid JS.
+        let profilePath = "/\(handle.lowercased())"
+        if !(bridge.webView.url?.path.lowercased().hasPrefix(profilePath) ?? false) {
+            bridge.loadURL(url)
+            guard await bridge.waitUntilReady(timeout: 30) else { fail("Profile didn't reload after sign-in."); return false }
+        }
+        return true
     }
 
     private func confirmSignedIn() async -> Bool {
