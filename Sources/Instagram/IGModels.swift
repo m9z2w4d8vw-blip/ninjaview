@@ -117,9 +117,17 @@ enum IGLinks {
 }
 
 extension LinkRules {
-    /// The viewer site's media server answers requests that come from the site's own pages.
+    /// Returns the Referer header required by the media server for the given URL.
+    /// - Viewer-site images (iqsaved CDN) need the viewer site as referer.
+    /// - Instagram CDN images (cdninstagram.com, fbcdn.net) need instagram.com.
     static func referer(for url: URL) -> String? {
         let host = url.host?.lowercased() ?? ""
-        return host.contains("iqsaved") || host.hasSuffix("insta-stories-viewer.com") ? "https://insta-stories-viewer.com/" : nil
+        if host.contains("iqsaved") || host.hasSuffix("insta-stories-viewer.com") {
+            return "https://insta-stories-viewer.com/"
+        }
+        if host.hasSuffix("cdninstagram.com") || host.hasSuffix("fbcdn.net") {
+            return "https://www.instagram.com/"
+        }
+        return nil
     }
 }

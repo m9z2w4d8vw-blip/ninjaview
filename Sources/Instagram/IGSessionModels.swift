@@ -11,7 +11,8 @@ struct IGLoginState: Codable {
 }
 
 /// One square on the profile grid.
-struct IGGridItem: Codable, Hashable {
+struct IGGridItem: Codable, Hashable, Identifiable {
+    var id: String { code }
     let code: String
     let kind: String
     let thumb: String

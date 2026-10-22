@@ -113,12 +113,16 @@ final class IGSession: ObservableObject, PageBridgeDelegate {
     // MARK: Reading
 
     /// Scrolls the profile grid to the end and returns every post code.
-    func readGrid(_ handle: String, maxMinutes: Double = 15) async -> IGGrid? {
+    /// - Parameters:
+    ///   - maxMinutes: Total time budget for the grid JS.
+    ///   - idleRounds: Rounds of `waitMs` with no new posts before giving up (default 8 = 20 s idle).
+    ///     Pass 4 for a live-view load (10 s idle) to return the first API batch faster.
+    func readGrid(_ handle: String, maxMinutes: Double = 15, idleRounds: Int = 8) async -> IGGrid? {
         guard await goToProfile(handle) else { return nil }
         do {
             let json = try await bridge.call(
-                "return JSON.stringify(await window.__igl.grid({maxMs: m, idleRounds: 8, waitMs: 2500}));",
-                ["m": Int(maxMinutes * 60_000)], timeout: maxMinutes * 60 + 30)
+                "return JSON.stringify(await window.__igl.grid({maxMs: m, idleRounds: r, waitMs: 2500}));",
+                ["m": Int(maxMinutes * 60_000), "r": idleRounds], timeout: maxMinutes * 60 + 30)
             let grid = try bridge.decode(IGGrid.self, json)
             noteBlocked()
             DebugLog.shared.add(.web, "Instagram @\(handle) grid: \(grid.items.count) of \(grid.total) (\(grid.reason))")

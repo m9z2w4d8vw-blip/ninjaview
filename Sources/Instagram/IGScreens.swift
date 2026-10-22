@@ -9,9 +9,11 @@ struct IGProfileScreen: View {
     @ObservedObject private var archive = IGArchive.shared
     @ObservedObject private var watch = WatchCenter.shared
     @ObservedObject private var postArchiver = IGPostArchiver.shared
+    @StateObject private var liveGrid = IGLiveGridModel()
     @EnvironmentObject private var app: AppModel
     @EnvironmentObject private var downloads: DownloadCenter
     @State private var viewer: IGViewerRequest? = nil
+    @State private var selectedPost: IGGridItem? = nil
     @State private var notifyOpen = false
 
     init(route: Route) {
@@ -36,11 +38,17 @@ struct IGProfileScreen: View {
             .onChange(of: engine.profile) { _, profile in
                 if let profile, profile.status == "ok" || profile.isPrivate {
                     app.didLoad(profile.header, platform: .instagram)
+                    // Kick off the live post grid once the profile handle is confirmed.
+                    Task { await liveGrid.load(profile.handle) }
                 }
             }
             .fullScreenCover(item: $viewer) { request in
                 IGViewer(request: request)
                     .environmentObject(AvatarStore.shared)
+                    .environmentObject(DownloadCenter.shared)
+            }
+            .sheet(item: $selectedPost) { item in
+                IGLivePostSheet(handle: handle, gridItem: item)
                     .environmentObject(DownloadCenter.shared)
             }
             .sheet(isPresented: $notifyOpen) {
@@ -239,55 +247,91 @@ struct IGProfileScreen: View {
         .padding(.top, 22)
     }
 
-    /// Posts always come from the signed-in Instagram session. The viewer site is never used.
+    /// Live post grid loaded from the signed-in session. Tap a thumbnail to open the full post.
     @ViewBuilder private var postsSection: some View {
-        let archivedCount = archive.account(handle)?.posts.count ?? 0
         VStack(alignment: .leading, spacing: 10) {
-            sectionTitle("Posts", count: archivedCount)
-            if let account = archive.account(handle), !account.posts.isEmpty {
-                LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 2), count: 3), spacing: 2) {
-                    ForEach(account.posts.prefix(18), id: \.id) { item in
-                        Button { app.openInstagramArchive(handle) } label: {
-                            IGCell(thumb: item.isVideo ? archive.fileURL(handle, item.cover) : archive.fileURL(handle, item.file),
-                                   isVideo: item.isVideo, label: item.comments.isEmpty ? "" : "\(item.comments.count) \u{1F4AC}")
+            sectionTitle("Posts", count: liveGrid.phase == .ready ? liveGrid.total : 0)
+
+            switch liveGrid.phase {
+            case .idle:
+                // Still waiting for the profile to confirm the handle (happens quickly).
+                ProgressView().frame(maxWidth: .infinity).padding(.vertical, 20)
+
+            case .loading:
+                VStack(spacing: 8) {
+                    ProgressView().frame(maxWidth: .infinity)
+                    Text("Loading posts from Instagram…")
+                        .font(.caption)
+                        .foregroundStyle(Color.nvMuted)
+                        .frame(maxWidth: .infinity)
+                }
+                .padding(.vertical, 16)
+
+            case .ready:
+                if liveGrid.items.isEmpty {
+                    Text("No posts.")
+                        .font(.footnote).foregroundStyle(Color.nvMuted)
+                        .padding(.horizontal, 16)
+                } else {
+                    // 3-column grid of live thumbnails — tap to open the full post.
+                    LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 2), count: 3), spacing: 2) {
+                        ForEach(liveGrid.items) { item in
+                            Button { selectedPost = item } label: {
+                                IGCell(thumb: URL.remote(item.thumb), isVideo: item.video)
+                            }
+                            .buttonStyle(.plain)
                         }
-                        .buttonStyle(.plain)
                     }
                 }
-                Button { app.openInstagramArchive(handle) } label: {
-                    Text(account.posts.count > 18 ? "See all \(account.posts.count) archived posts" : "Open archive")
-                        .font(.footnote.weight(.semibold))
-                        .foregroundStyle(Color.nvInk)
-                }
-                .padding(.horizontal, 16)
-                .padding(.top, 4)
-            } else {
-                VStack(alignment: .leading, spacing: 10) {
-                    Text("Posts come from your signed-in Instagram, with full history and comments.")
-                        .font(.footnote)
-                        .foregroundStyle(Color.nvMuted)
-                    if postArchiver.isRunning(handle) {
-                        Text(postArchiver.status).font(.footnote).foregroundStyle(Color.nvInk)
-                        if postArchiver.total > 0 {
-                            ProgressView(value: Double(postArchiver.done), total: Double(postArchiver.total)).tint(Color.nvSignal)
-                        } else {
-                            ProgressView().tint(Color.nvSignal)
-                        }
-                    } else if IGCredentials.shared.isSignedIn {
-                        Button { archiveAllPosts(handle) } label: {
-                            Label("Archive all posts", systemImage: "square.grid.3x3")
-                        }
-                        .buttonStyle(InstaButtonStyle())
+                // Below the grid: archive action or open-archive link.
+                liveGridArchiveRow
+
+            case .failed(let msg):
+                VStack(alignment: .leading, spacing: 8) {
+                    Text(msg).font(.footnote).foregroundStyle(Color.nvMuted)
+                    if !IGCredentials.shared.isSignedIn {
+                        Text("Add your sign-in in Settings \u{203A} Instagram Sign-in.")
+                            .font(.caption).foregroundStyle(Color.nvMuted)
                     } else {
-                        Text("Add your Instagram sign-in in Settings to archive posts.")
-                            .font(.caption)
-                            .foregroundStyle(Color.nvMuted)
+                        Button("Try again") { Task { await liveGrid.retry(handle) } }
+                            .font(.footnote.weight(.semibold)).foregroundStyle(Color.nvInk)
                     }
                 }
                 .padding(.horizontal, 16)
             }
         }
         .padding(.top, 24)
+    }
+
+    @ViewBuilder private var liveGridArchiveRow: some View {
+        HStack(spacing: 6) {
+            if postArchiver.isRunning(handle) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(postArchiver.status).font(.footnote).foregroundStyle(Color.nvInk)
+                    if postArchiver.total > 0 {
+                        ProgressView(value: Double(postArchiver.done), total: Double(postArchiver.total))
+                            .tint(Color.nvSignal)
+                    } else {
+                        ProgressView().tint(Color.nvSignal)
+                    }
+                }
+            } else if let account = archive.account(handle), !account.posts.isEmpty {
+                Button { app.openInstagramArchive(handle) } label: {
+                    Label("View \(account.posts.count) archived posts", systemImage: "archivebox.fill")
+                }
+                .buttonStyle(InstaButtonStyle())
+                Button { archiveAllPosts(handle) } label: { Image(systemName: "arrow.clockwise") }
+                    .buttonStyle(InstaButtonStyle()).frame(width: 40)
+                    .accessibilityLabel("Update archive")
+            } else {
+                Button { archiveAllPosts(handle) } label: {
+                    Label("Archive all posts + comments", systemImage: "archivebox")
+                }
+                .buttonStyle(InstaButtonStyle())
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.top, 8)
     }
 
     private func sectionTitle(_ title: String, count: Int) -> some View {
