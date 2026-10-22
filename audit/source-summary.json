@@ -1,0 +1,830 @@
+{
+  "description": "Automatic every-line static source inventory: not a semantic correctness guarantee",
+  "files": 60,
+  "lines_total": 12643,
+  "line_kinds": {
+    "code": 10980,
+    "blank": 1087,
+    "comment": 576
+  },
+  "flag_occurrences": {
+    "network": 56,
+    "log-or-sensitive": 173,
+    "java-script-bridge": 43,
+    "navigation-or-domain": 41,
+    "persistent-settings": 21,
+    "try-catch": 59,
+    "webview": 27,
+    "deferred-cleanup": 17,
+    "task-or-timing": 452,
+    "forced-url-construction": 4,
+    "filesystem": 58,
+    "potential-unbounded-loop": 9,
+    "keychain": 18
+  },
+  "files_detail": [
+    {
+      "path": ".github/workflows/build.yml",
+      "lines": 109,
+      "classification": {
+        "code": 94,
+        "blank": 15
+      },
+      "risk_flags": {}
+    },
+    {
+      "path": "Config/Info.plist",
+      "lines": 86,
+      "classification": {
+        "code": 86
+      },
+      "risk_flags": {
+        "network": 1
+      }
+    },
+    {
+      "path": "README.md",
+      "lines": 123,
+      "classification": {
+        "code": 72,
+        "blank": 46,
+        "comment": 5
+      },
+      "risk_flags": {
+        "network": 1,
+        "log-or-sensitive": 1,
+        "java-script-bridge": 1
+      }
+    },
+    {
+      "path": "Resources/Assets.xcassets/AccentColor.colorset/Contents.json",
+      "lines": 20,
+      "classification": {
+        "code": 20
+      },
+      "risk_flags": {}
+    },
+    {
+      "path": "Resources/Assets.xcassets/AppIcon.appiconset/Contents.json",
+      "lines": 11,
+      "classification": {
+        "code": 11
+      },
+      "risk_flags": {}
+    },
+    {
+      "path": "Resources/Assets.xcassets/Contents.json",
+      "lines": 3,
+      "classification": {
+        "code": 3
+      },
+      "risk_flags": {}
+    },
+    {
+      "path": "Sources/App/AppModel.swift",
+      "lines": 191,
+      "classification": {
+        "code": 154,
+        "blank": 24,
+        "comment": 13
+      },
+      "risk_flags": {
+        "log-or-sensitive": 8,
+        "navigation-or-domain": 1
+      }
+    },
+    {
+      "path": "Sources/App/AppSettings.swift",
+      "lines": 70,
+      "classification": {
+        "code": 62,
+        "blank": 6,
+        "comment": 2
+      },
+      "risk_flags": {
+        "persistent-settings": 9
+      }
+    },
+    {
+      "path": "Sources/App/NinjaViewApp.swift",
+      "lines": 67,
+      "classification": {
+        "code": 60,
+        "blank": 4,
+        "comment": 3
+      },
+      "risk_flags": {
+        "log-or-sensitive": 4,
+        "try-catch": 1
+      }
+    },
+    {
+      "path": "Sources/App/Theme.swift",
+      "lines": 89,
+      "classification": {
+        "code": 70,
+        "blank": 11,
+        "comment": 8
+      },
+      "risk_flags": {}
+    },
+    {
+      "path": "Sources/Engine/EngineDock.swift",
+      "lines": 47,
+      "classification": {
+        "code": 39,
+        "blank": 5,
+        "comment": 3
+      },
+      "risk_flags": {
+        "webview": 3
+      }
+    },
+    {
+      "path": "Sources/Engine/LinkRules.swift",
+      "lines": 29,
+      "classification": {
+        "code": 21,
+        "blank": 5,
+        "comment": 3
+      },
+      "risk_flags": {
+        "navigation-or-domain": 7
+      }
+    },
+    {
+      "path": "Sources/Engine/PageBridge.swift",
+      "lines": 360,
+      "classification": {
+        "code": 302,
+        "blank": 40,
+        "comment": 18
+      },
+      "risk_flags": {
+        "deferred-cleanup": 1,
+        "webview": 13,
+        "task-or-timing": 8,
+        "log-or-sensitive": 16,
+        "try-catch": 2,
+        "java-script-bridge": 1,
+        "network": 3,
+        "navigation-or-domain": 9
+      }
+    },
+    {
+      "path": "Sources/Engine/ProfileEngine.swift",
+      "lines": 453,
+      "classification": {
+        "code": 384,
+        "blank": 51,
+        "comment": 18
+      },
+      "risk_flags": {
+        "task-or-timing": 64,
+        "java-script-bridge": 14,
+        "try-catch": 4,
+        "log-or-sensitive": 5,
+        "deferred-cleanup": 1,
+        "network": 1
+      }
+    },
+    {
+      "path": "Sources/Engine/ScriptRouter.swift",
+      "lines": 37,
+      "classification": {
+        "code": 30,
+        "blank": 4,
+        "comment": 3
+      },
+      "risk_flags": {
+        "task-or-timing": 1
+      }
+    },
+    {
+      "path": "Sources/Engine/WebAssets.swift",
+      "lines": 825,
+      "classification": {
+        "code": 752,
+        "blank": 30,
+        "comment": 43
+      },
+      "risk_flags": {
+        "java-script-bridge": 10,
+        "try-catch": 12,
+        "navigation-or-domain": 1,
+        "network": 2,
+        "task-or-timing": 46
+      }
+    },
+    {
+      "path": "Sources/Engine/WebFactory.swift",
+      "lines": 171,
+      "classification": {
+        "code": 141,
+        "blank": 18,
+        "comment": 12
+      },
+      "risk_flags": {
+        "webview": 4,
+        "forced-url-construction": 1,
+        "network": 2,
+        "task-or-timing": 15,
+        "log-or-sensitive": 3,
+        "java-script-bridge": 2,
+        "navigation-or-domain": 3
+      }
+    },
+    {
+      "path": "Sources/Instagram/IGArchive.swift",
+      "lines": 473,
+      "classification": {
+        "code": 405,
+        "blank": 41,
+        "comment": 27
+      },
+      "risk_flags": {
+        "network": 5,
+        "filesystem": 13,
+        "task-or-timing": 21,
+        "deferred-cleanup": 3,
+        "log-or-sensitive": 11,
+        "try-catch": 6,
+        "navigation-or-domain": 1
+      }
+    },
+    {
+      "path": "Sources/Instagram/IGAssets.swift",
+      "lines": 233,
+      "classification": {
+        "code": 211,
+        "blank": 11,
+        "comment": 11
+      },
+      "risk_flags": {
+        "java-script-bridge": 2,
+        "try-catch": 2,
+        "task-or-timing": 6,
+        "potential-unbounded-loop": 1
+      }
+    },
+    {
+      "path": "Sources/Instagram/IGCredentials.swift",
+      "lines": 103,
+      "classification": {
+        "code": 83,
+        "blank": 12,
+        "comment": 8
+      },
+      "risk_flags": {
+        "persistent-settings": 3,
+        "task-or-timing": 4,
+        "log-or-sensitive": 10,
+        "keychain": 18
+      }
+    },
+    {
+      "path": "Sources/Instagram/IGEngine.swift",
+      "lines": 269,
+      "classification": {
+        "code": 213,
+        "blank": 33,
+        "comment": 23
+      },
+      "risk_flags": {
+        "log-or-sensitive": 7,
+        "task-or-timing": 18,
+        "java-script-bridge": 5,
+        "try-catch": 3,
+        "deferred-cleanup": 2,
+        "webview": 1,
+        "network": 1
+      }
+    },
+    {
+      "path": "Sources/Instagram/IGModels.swift",
+      "lines": 133,
+      "classification": {
+        "code": 99,
+        "blank": 16,
+        "comment": 18
+      },
+      "risk_flags": {
+        "network": 7,
+        "navigation-or-domain": 7,
+        "forced-url-construction": 2
+      }
+    },
+    {
+      "path": "Sources/Instagram/IGPostArchiver.swift",
+      "lines": 121,
+      "classification": {
+        "code": 93,
+        "blank": 16,
+        "comment": 12
+      },
+      "risk_flags": {
+        "task-or-timing": 9,
+        "deferred-cleanup": 1
+      }
+    },
+    {
+      "path": "Sources/Instagram/IGPostDetailView.swift",
+      "lines": 206,
+      "classification": {
+        "code": 186,
+        "blank": 16,
+        "comment": 4
+      },
+      "risk_flags": {
+        "task-or-timing": 2,
+        "network": 1
+      }
+    },
+    {
+      "path": "Sources/Instagram/IGScreens.swift",
+      "lines": 715,
+      "classification": {
+        "code": 657,
+        "blank": 46,
+        "comment": 12
+      },
+      "risk_flags": {
+        "task-or-timing": 16
+      }
+    },
+    {
+      "path": "Sources/Instagram/IGSession.swift",
+      "lines": 254,
+      "classification": {
+        "code": 197,
+        "blank": 31,
+        "comment": 26
+      },
+      "risk_flags": {
+        "task-or-timing": 27,
+        "log-or-sensitive": 13,
+        "forced-url-construction": 1,
+        "network": 3,
+        "java-script-bridge": 6,
+        "try-catch": 3,
+        "webview": 1
+      }
+    },
+    {
+      "path": "Sources/Instagram/IGSessionAssets.swift",
+      "lines": 321,
+      "classification": {
+        "code": 295,
+        "blank": 9,
+        "comment": 17
+      },
+      "risk_flags": {
+        "java-script-bridge": 2,
+        "try-catch": 5,
+        "network": 3,
+        "log-or-sensitive": 5,
+        "task-or-timing": 10,
+        "potential-unbounded-loop": 5
+      }
+    },
+    {
+      "path": "Sources/Instagram/IGSessionModels.swift",
+      "lines": 69,
+      "classification": {
+        "code": 52,
+        "blank": 7,
+        "comment": 10
+      },
+      "risk_flags": {}
+    },
+    {
+      "path": "Sources/Instagram/IGSettings.swift",
+      "lines": 197,
+      "classification": {
+        "code": 176,
+        "blank": 11,
+        "comment": 10
+      },
+      "risk_flags": {
+        "task-or-timing": 7,
+        "log-or-sensitive": 10,
+        "deferred-cleanup": 1,
+        "webview": 1
+      }
+    },
+    {
+      "path": "Sources/Instagram/IGViewer.swift",
+      "lines": 316,
+      "classification": {
+        "code": 284,
+        "blank": 24,
+        "comment": 8
+      },
+      "risk_flags": {
+        "task-or-timing": 5,
+        "network": 1
+      }
+    },
+    {
+      "path": "Sources/Library/BackgroundScheduler.swift",
+      "lines": 101,
+      "classification": {
+        "code": 82,
+        "blank": 10,
+        "comment": 9
+      },
+      "risk_flags": {
+        "try-catch": 1,
+        "task-or-timing": 3,
+        "log-or-sensitive": 2
+      }
+    },
+    {
+      "path": "Sources/Library/CrawlCenter.swift",
+      "lines": 545,
+      "classification": {
+        "code": 472,
+        "blank": 42,
+        "comment": 31
+      },
+      "risk_flags": {
+        "network": 5,
+        "task-or-timing": 51,
+        "log-or-sensitive": 12,
+        "deferred-cleanup": 1,
+        "try-catch": 4,
+        "potential-unbounded-loop": 1,
+        "filesystem": 11,
+        "navigation-or-domain": 1
+      }
+    },
+    {
+      "path": "Sources/Library/KeepAlive.swift",
+      "lines": 119,
+      "classification": {
+        "code": 103,
+        "blank": 10,
+        "comment": 6
+      },
+      "risk_flags": {
+        "log-or-sensitive": 7,
+        "try-catch": 1,
+        "filesystem": 2
+      }
+    },
+    {
+      "path": "Sources/Library/NotificationManager.swift",
+      "lines": 94,
+      "classification": {
+        "code": 77,
+        "blank": 10,
+        "comment": 7
+      },
+      "risk_flags": {
+        "task-or-timing": 9,
+        "log-or-sensitive": 3,
+        "try-catch": 1
+      }
+    },
+    {
+      "path": "Sources/Library/ProfileStore.swift",
+      "lines": 246,
+      "classification": {
+        "code": 199,
+        "blank": 32,
+        "comment": 15
+      },
+      "risk_flags": {
+        "task-or-timing": 4,
+        "filesystem": 11,
+        "log-or-sensitive": 2
+      }
+    },
+    {
+      "path": "Sources/Library/StoredModels.swift",
+      "lines": 157,
+      "classification": {
+        "code": 121,
+        "blank": 18,
+        "comment": 18
+      },
+      "risk_flags": {}
+    },
+    {
+      "path": "Sources/Library/WatchCenter.swift",
+      "lines": 619,
+      "classification": {
+        "code": 504,
+        "blank": 62,
+        "comment": 53
+      },
+      "risk_flags": {
+        "persistent-settings": 6,
+        "task-or-timing": 33,
+        "log-or-sensitive": 12,
+        "deferred-cleanup": 3,
+        "potential-unbounded-loop": 1
+      }
+    },
+    {
+      "path": "Sources/Media/AvatarStore.swift",
+      "lines": 68,
+      "classification": {
+        "code": 59,
+        "blank": 7,
+        "comment": 2
+      },
+      "risk_flags": {
+        "network": 2,
+        "filesystem": 5,
+        "task-or-timing": 2,
+        "deferred-cleanup": 1,
+        "try-catch": 1,
+        "log-or-sensitive": 1
+      }
+    },
+    {
+      "path": "Sources/Media/ClipPlayer.swift",
+      "lines": 151,
+      "classification": {
+        "code": 133,
+        "blank": 15,
+        "comment": 3
+      },
+      "risk_flags": {
+        "log-or-sensitive": 4,
+        "navigation-or-domain": 1,
+        "task-or-timing": 3
+      }
+    },
+    {
+      "path": "Sources/Media/DownloadCenter.swift",
+      "lines": 243,
+      "classification": {
+        "code": 217,
+        "blank": 19,
+        "comment": 7
+      },
+      "risk_flags": {
+        "network": 6,
+        "task-or-timing": 20,
+        "log-or-sensitive": 9,
+        "filesystem": 6,
+        "try-catch": 4,
+        "navigation-or-domain": 2
+      }
+    },
+    {
+      "path": "Sources/Media/ImagePipeline.swift",
+      "lines": 133,
+      "classification": {
+        "code": 119,
+        "blank": 10,
+        "comment": 4
+      },
+      "risk_flags": {
+        "task-or-timing": 7,
+        "navigation-or-domain": 5,
+        "log-or-sensitive": 8,
+        "network": 4,
+        "try-catch": 1
+      }
+    },
+    {
+      "path": "Sources/Media/MediaFiles.swift",
+      "lines": 112,
+      "classification": {
+        "code": 99,
+        "blank": 10,
+        "comment": 3
+      },
+      "risk_flags": {
+        "deferred-cleanup": 1,
+        "filesystem": 4
+      }
+    },
+    {
+      "path": "Sources/Model/Models.swift",
+      "lines": 224,
+      "classification": {
+        "code": 181,
+        "blank": 32,
+        "comment": 11
+      },
+      "risk_flags": {
+        "navigation-or-domain": 1,
+        "persistent-settings": 2,
+        "network": 1
+      }
+    },
+    {
+      "path": "Sources/Model/TikTokTarget.swift",
+      "lines": 46,
+      "classification": {
+        "code": 36,
+        "blank": 7,
+        "comment": 3
+      },
+      "risk_flags": {
+        "network": 2,
+        "navigation-or-domain": 2
+      }
+    },
+    {
+      "path": "Sources/Support/DebugLog.swift",
+      "lines": 141,
+      "classification": {
+        "code": 112,
+        "blank": 18,
+        "comment": 11
+      },
+      "risk_flags": {
+        "log-or-sensitive": 2,
+        "filesystem": 5,
+        "task-or-timing": 1
+      }
+    },
+    {
+      "path": "Sources/Support/Diagnostics.swift",
+      "lines": 127,
+      "classification": {
+        "code": 114,
+        "blank": 9,
+        "comment": 4
+      },
+      "risk_flags": {
+        "log-or-sensitive": 3,
+        "filesystem": 1,
+        "try-catch": 1
+      }
+    },
+    {
+      "path": "Sources/Views/ArchiveProfileView.swift",
+      "lines": 265,
+      "classification": {
+        "code": 244,
+        "blank": 17,
+        "comment": 4
+      },
+      "risk_flags": {
+        "task-or-timing": 5
+      }
+    },
+    {
+      "path": "Sources/Views/CommentsSheet.swift",
+      "lines": 318,
+      "classification": {
+        "code": 292,
+        "blank": 21,
+        "comment": 5
+      },
+      "risk_flags": {
+        "task-or-timing": 16,
+        "try-catch": 4,
+        "deferred-cleanup": 2
+      }
+    },
+    {
+      "path": "Sources/Views/Components.swift",
+      "lines": 224,
+      "classification": {
+        "code": 203,
+        "blank": 17,
+        "comment": 4
+      },
+      "risk_flags": {}
+    },
+    {
+      "path": "Sources/Views/DebugLogView.swift",
+      "lines": 77,
+      "classification": {
+        "code": 74,
+        "blank": 3
+      },
+      "risk_flags": {
+        "log-or-sensitive": 7
+      }
+    },
+    {
+      "path": "Sources/Views/HomeView.swift",
+      "lines": 241,
+      "classification": {
+        "code": 221,
+        "blank": 18,
+        "comment": 2
+      },
+      "risk_flags": {
+        "persistent-settings": 1,
+        "task-or-timing": 1
+      }
+    },
+    {
+      "path": "Sources/Views/InstaProfile.swift",
+      "lines": 492,
+      "classification": {
+        "code": 443,
+        "blank": 35,
+        "comment": 14
+      },
+      "risk_flags": {
+        "potential-unbounded-loop": 1
+      }
+    },
+    {
+      "path": "Sources/Views/ItemViewer.swift",
+      "lines": 830,
+      "classification": {
+        "code": 736,
+        "blank": 66,
+        "comment": 28
+      },
+      "risk_flags": {
+        "task-or-timing": 15,
+        "log-or-sensitive": 4,
+        "try-catch": 3,
+        "network": 4
+      }
+    },
+    {
+      "path": "Sources/Views/NotifySheet.swift",
+      "lines": 162,
+      "classification": {
+        "code": 151,
+        "blank": 8,
+        "comment": 3
+      },
+      "risk_flags": {
+        "task-or-timing": 2
+      }
+    },
+    {
+      "path": "Sources/Views/ProfileScreen.swift",
+      "lines": 358,
+      "classification": {
+        "code": 324,
+        "blank": 26,
+        "comment": 8
+      },
+      "risk_flags": {
+        "task-or-timing": 17,
+        "network": 1
+      }
+    },
+    {
+      "path": "Sources/Views/RootView.swift",
+      "lines": 41,
+      "classification": {
+        "code": 39,
+        "blank": 2
+      },
+      "risk_flags": {
+        "log-or-sensitive": 1
+      }
+    },
+    {
+      "path": "Sources/Views/SettingsView.swift",
+      "lines": 175,
+      "classification": {
+        "code": 161,
+        "blank": 14
+      },
+      "risk_flags": {
+        "log-or-sensitive": 3,
+        "task-or-timing": 3
+      }
+    },
+    {
+      "path": "Sources/Views/WatchListView.swift",
+      "lines": 117,
+      "classification": {
+        "code": 110,
+        "blank": 5,
+        "comment": 2
+      },
+      "risk_flags": {
+        "task-or-timing": 1
+      }
+    },
+    {
+      "path": "Sources/Views/WebPageSheet.swift",
+      "lines": 63,
+      "classification": {
+        "code": 53,
+        "blank": 8,
+        "comment": 2
+      },
+      "risk_flags": {
+        "webview": 4
+      }
+    },
+    {
+      "path": "project.yml",
+      "lines": 53,
+      "classification": {
+        "code": 49,
+        "blank": 4
+      },
+      "risk_flags": {}
+    }
+  ]
+}

@@ -55,6 +55,14 @@ final class WebFactory: NSObject {
         scheduleSpare(after: 0.5)
     }
 
+    /// The app's only persistent WKWebsiteDataStore is used by signed-in Instagram.
+    /// Wipe all of it on sign-out, including potential checkpoint/Meta SSO cookies that
+    /// may live on domains other than instagram.com. Anonymous pages use a separate store.
+    func clearInstagramSession() async {
+        await Self.instagramSessionStore.removeData(ofTypes: WKWebsiteDataStore.allWebsiteDataTypes(),
+                                                    modifiedSince: .distantPast)
+    }
+
     private func discardSpare() {
         spareTask?.cancel()
         spareTask = nil
@@ -131,7 +139,10 @@ final class WebFactory: NSObject {
         webView.scrollView.backgroundColor = Palette.paper
         webView.allowsLinkPreview = false
         webView.allowsBackForwardNavigationGestures = false
+        // Do not expose a signed-in browser or page data to Web Inspector in release builds.
+        #if DEBUG
         webView.isInspectable = true
+        #endif
         webView.navigationDelegate = self
         EngineDock.park(webView)
         webView.load(URLRequest(url: Self.homeURL))

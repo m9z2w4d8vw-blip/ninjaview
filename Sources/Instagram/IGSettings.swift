@@ -7,6 +7,7 @@ import WebKit
 /// posts and comments. Stories never use it.
 struct IGSettingsSection: View {
     @ObservedObject private var creds = IGCredentials.shared
+    @ObservedObject private var postArchiver = IGPostArchiver.shared
     @ObservedObject private var settings = AppSettings.shared
     @State private var signInOpen = false
     @State private var pageOpen = false
@@ -14,12 +15,12 @@ struct IGSettingsSection: View {
     var body: some View {
         Section {
             if let username = creds.username {
-                LabeledContent("Signed in as", value: "@\(username)")
-                Button("Open Instagram (finish a check or verify)") { pageOpen = true }
+                LabeledContent("Credentials saved for", value: "@\(username)")
+                Button("Open Instagram (sign in or verify)") { pageOpen = true }
                 Button("Sign out of Instagram", role: .destructive) {
-                    creds.signOut()
-                    Task { await WebFactory.shared.clearInstagramData() }
+                    Task { await creds.signOut() }
                 }
+                .disabled(postArchiver.isRunning)
             } else {
                 Button("Sign in to Instagram") { signInOpen = true }
             }
@@ -36,7 +37,7 @@ struct IGSettingsSection: View {
     private var signedOutFooter: String {
         let preview = " \u{201C}Preview posts without signing in\u{201D} shows an account's newest posts (about 12) from insta-stories-viewer.com without a sign-in; leave it off to use your signed-in Instagram for posts instead. Stories always come from insta-stories-viewer.com either way."
         if creds.isSignedIn {
-            return "Posts are archived from your signed-in Instagram, with full history and comments. That account is no longer anonymous while signed in, and it's used only for posts and comments \u{2014} never for stories or highlights. Use a throwaway account: automating a real one can get it rate-limited or flagged. Your password is kept in this iPhone's Keychain." + preview
+            return "Instagram credentials are saved but a successful sign-in has not necessarily been verified. Posts can be archived from a signed-in Instagram session, with full history and comments. That account is no longer anonymous while signed in, and it's used only for posts and comments \u{2014} never for stories or highlights. Use a throwaway account: automating a real one can get it rate-limited or flagged. Your password is kept in this iPhone's Keychain." + preview
         }
         return "Sign in to archive a full post history with comments from Instagram directly. Use a throwaway account, since automating a real one risks it being rate-limited or flagged. The password is stored only in this iPhone's Keychain, and stories never use the sign-in." + preview
     }
@@ -50,6 +51,7 @@ struct IGSignInSheet: View {
     @State private var username = ""
     @State private var password = ""
     @State private var error = ""
+    @State private var saving = false
 
     var body: some View {
         NavigationStack {
@@ -67,10 +69,10 @@ struct IGSignInSheet: View {
                     }
                 }
                 Section {
-                    Button("Save") { save() }
-                        .disabled(username.trimmingCharacters(in: .whitespaces).isEmpty || password.isEmpty)
+                    Button(saving ? "Saving…" : "Save") { Task { await save() } }
+                        .disabled(saving || username.trimmingCharacters(in: .whitespaces).isEmpty || password.isEmpty)
                 } footer: {
-                    Text("Use a throwaway account. NinjaView stores this only in the iPhone's Keychain and signs in to Instagram directly; it isn't sent anywhere else. Stories never use it.")
+                    Text("Use a throwaway account. Your password is kept in this iPhone's Keychain, then sent to Instagram when signing in. Stories never use the sign-in.")
                 }
             }
             .navigationTitle("Instagram sign-in")
@@ -82,8 +84,13 @@ struct IGSignInSheet: View {
         .presentationDetents([.medium])
     }
 
-    private func save() {
-        if creds.save(username: username, password: password) {
+    @MainActor
+    private func save() async {
+        guard !saving else { return }
+        saving = true
+        defer { saving = false }
+        if await creds.save(username: username, password: password) {
+            password = ""
             UINotificationFeedbackGenerator().notificationOccurred(.success)
             dismiss()
         } else {
@@ -99,6 +106,8 @@ struct IGSessionPageSheet: View {
     @StateObject private var holder = SessionHolder()
 
     @State private var loading = true
+    @State private var loadError: String?
+    @State private var loadAttempt = 0
 
     var body: some View {
         NavigationStack {
@@ -106,9 +115,24 @@ struct IGSessionPageSheet: View {
                 Color.nvPaper.ignoresSafeArea()
                 IGPageContainer(webView: holder.session.bridge.webView)
                     .ignoresSafeArea(edges: .bottom)
-                if loading {
-                    ProgressView("Opening Instagram")
-                        .tint(Color.nvInk)
+                if loading || loadError != nil {
+                    VStack(spacing: 16) {
+                        if loading {
+                            ProgressView("Opening Instagram")
+                                .tint(Color.nvInk)
+                        } else {
+                            Text("Couldn't open Instagram")
+                                .font(.headline)
+                            Text(loadError ?? "Instagram could not load.")
+                                .multilineTextAlignment(.center)
+                                .foregroundStyle(.secondary)
+                            Button("Retry") { loadAttempt += 1 }
+                                .buttonStyle(.borderedProminent)
+                        }
+                    }
+                    .padding(24)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .background(Color.nvPaper)
                 }
             }
             .navigationTitle("Instagram")
@@ -117,8 +141,18 @@ struct IGSessionPageSheet: View {
                 ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } }
             }
         }
-        .task {
-            await holder.session.prepareForDisplay()
+        .task(id: loadAttempt) {
+            loading = true
+            loadError = nil
+            if loadAttempt > 0 { holder.session.reloadForDisplay() }
+            let opened = await holder.session.prepareForDisplay()
+            guard !Task.isCancelled else { return }
+            if !opened {
+                switch holder.session.phase {
+                case .failed(let why): loadError = why
+                default: loadError = "Instagram didn't finish loading. Check your connection and retry."
+                }
+            }
             loading = false
         }
         .onDisappear { holder.finish() }
@@ -137,11 +171,9 @@ struct IGSessionPageSheet: View {
                 ownsSession = true
             }
         }
-        /// Keeps a temporary session parked (not torn down) so a check in progress isn't lost; a
-        /// session owned by the archiver is left entirely alone.
-        func finish() {
-            if ownsSession { session.parkAfterDisplay() }
-        }
+        /// Always reattach the web view to its hidden host when the sheet closes. Otherwise a
+        /// running archiver can lose its page when SwiftUI destroys the sheet's view hierarchy.
+        func finish() { session.parkAfterDisplay() }
         deinit { if ownsSession { let s = session; Task { @MainActor in s.teardown() } } }
     }
 }

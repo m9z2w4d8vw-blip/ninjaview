@@ -175,7 +175,7 @@ struct IGProfileScreen: View {
     private func archiveAllPosts(_ handle: String) {
         Task {
             let summary = await IGPostArchiver.shared.run(handle)
-            downloads.show(summary.hasPrefix("Saved") || summary.hasPrefix("@") || summary.hasPrefix("Stopped") ? .success : .failure, summary)
+            downloads.show(summary.hasPrefix("Couldn't") || summary.hasPrefix("Add") || summary.contains("wants") ? .failure : .success, summary)
         }
     }
 
@@ -587,7 +587,7 @@ struct IGArchiveScreen: View {
     private func archiveAllPosts() {
         Task {
             let summary = await postArchiver.run(handle)
-            downloads.show(summary.hasPrefix("Saved") || summary.hasPrefix("@") || summary.hasPrefix("Stopped") ? .success : .failure, summary)
+            downloads.show(summary.hasPrefix("Couldn't") || summary.hasPrefix("Add") || summary.contains("wants") ? .failure : .success, summary)
         }
     }
 

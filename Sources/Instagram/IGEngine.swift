@@ -258,7 +258,10 @@ extension WebFactory {
         webView.scrollView.backgroundColor = Palette.paper
         webView.allowsLinkPreview = false
         webView.allowsBackForwardNavigationGestures = false
+        // Do not expose a signed-in browser or page data to Web Inspector in release builds.
+        #if DEBUG
         webView.isInspectable = true
+        #endif
         EngineDock.park(webView)
         webView.load(URLRequest(url: url))
         return PreparedWebView(webView: webView, router: router)

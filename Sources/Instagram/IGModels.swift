@@ -102,8 +102,13 @@ enum IGTarget {
     }
 
     static func isInstagramLink(_ input: String) -> Bool {
-        let lower = input.lowercased()
-        return lower.contains("instagram.com") || lower.contains("instagr.am")
+        let trimmed = input.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let url = URL(string: trimmed.contains("://") ? trimmed : "https://" + trimmed),
+              let scheme = url.scheme?.lowercased(), ["http", "https"].contains(scheme),
+              let host = url.host?.lowercased() else { return false }
+        // Reject lookalikes such as instagram.com.attacker.example.
+        return host == "instagram.com" || host.hasSuffix(".instagram.com") ||
+               host == "instagr.am" || host.hasSuffix(".instagr.am")
     }
 }
 
@@ -113,7 +118,10 @@ enum IGLinks {
     static func viewer(_ handle: String) -> URL? { URL(string: "https://insta-stories-viewer.com/\(handle.lowercased())/") }
     static func instagram(_ handle: String) -> URL? { URL(string: "https://www.instagram.com/\(handle.lowercased())/") }
     static let instagramHome = URL(string: "https://www.instagram.com/")!
-    static func isViewer(_ url: URL) -> Bool { (url.host?.lowercased() ?? "").hasSuffix("insta-stories-viewer.com") }
+    static func isViewer(_ url: URL) -> Bool {
+        guard url.scheme?.lowercased() == "https", let host = url.host?.lowercased() else { return false }
+        return host == "insta-stories-viewer.com" || host.hasSuffix(".insta-stories-viewer.com")
+    }
 }
 
 extension LinkRules {
