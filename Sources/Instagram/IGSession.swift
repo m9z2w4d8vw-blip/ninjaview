@@ -134,7 +134,7 @@ final class IGSession: ObservableObject, PageBridgeDelegate {
     }
 
     /// Opens one post by code and reads its media and full comment threads.
-    func readPost(_ code: String, comments: Bool = true, maxMinutes: Double = 5, maxComments: Int = 4000) async -> IGPostDetail? {
+    func readPost(_ code: String, comments: Bool = true, maxMinutes: Double = 5, maxComments: Int = 4000, expectedComments: Int = 0) async -> IGPostDetail? {
         guard let url = URL(string: "https://www.instagram.com/p/\(code)/") else { return nil }
         bridge.loadURL(url)
         guard await bridge.waitUntilReady(timeout: 30), !Task.isCancelled else { return nil }
@@ -146,8 +146,8 @@ final class IGSession: ObservableObject, PageBridgeDelegate {
         }
         do {
             let json = try await bridge.call(
-                "return JSON.stringify(await window.__igl.post({comments: c, maxComments: n, maxMs: m, waitMs: 2000, slideMs: 700, maxRounds: 500}));",
-                ["c": comments, "n": maxComments, "m": Int(maxMinutes * 60_000)], timeout: maxMinutes * 60 + 30)
+                "return JSON.stringify(await window.__igl.post({comments: c, maxComments: n, maxMs: m, expectedComments: e, waitMs: 4500, slideMs: 700, maxRounds: 500}));",
+                ["c": comments, "n": maxComments, "m": Int(maxMinutes * 60_000), "e": expectedComments], timeout: maxMinutes * 60 + 30)
             let detail = try bridge.decode(IGPostDetail.self, json)
             noteBlocked()
             return detail

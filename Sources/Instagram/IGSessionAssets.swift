@@ -371,8 +371,13 @@ enum IGSessionAssets {
       var id = m[2] || m[1], parent = m[2] ? m[1] : '';
       if (seen[id]) return;
       seen[id] = true;
-      var box = a;
-      while (box.parentElement && box.parentElement !== root && commentTimes(box.parentElement).length === 1) box = box.parentElement;
+      // The saved desktop pages put each comment (including replies) in its own li.
+      // Avoid a quadratic querySelectorAll over every ancestor for every comment.
+      var box = a.closest('li');
+      if (!box || !root.contains(box)) {
+        box = a;
+        while (box.parentElement && box.parentElement !== root && commentTimes(box.parentElement).length === 1) box = box.parentElement;
+      }
       var h3 = q('h3', box);
       var author = h3 ? text(q('a', h3)) || text(h3) : '';
       var body = qa('span[dir="auto"]', box).filter(function (s) { return !(h3 && h3.contains(s)) && !s.closest('span[dir="ltr"]'); })[0];
@@ -452,23 +457,91 @@ enum IGSessionAssets {
     var pick = own || outside[outside.length - 1];
     return pick ? pick.getAttribute('datetime') || '' : '';
   }
-  async function expand(root, opts, gen) {
-    var limit = opts.maxComments || 3000, deadline = Date.now() + (opts.maxMs || 5 * 60 * 1000), wait = opts.waitMs || 2000;
-    var rounds = 0, tries = new WeakMap();
-    function fresh(b) { return !!b && (tries.get(b) || 0) < 2; }   // a control that did nothing twice is skipped
-    while (gen === postGen && Date.now() < deadline && rounds < (opts.maxRounds || 400)) {
-      dismissPrompts();
-      var target = threadControls(root).filter(fresh)[0] || [moreControl(root)].filter(fresh)[0];
-      if (!target || commentTimes(root).length >= limit) break;
-      var before = commentTimes(root).length;
-      target.click();
-      var until = Date.now() + wait;
-      while (gen === postGen && Date.now() < until && commentTimes(root).length === before && target.isConnected && visible(target)) await sleep(200);
-      if (commentTimes(root).length === before) tries.set(target, (tries.get(target) || 0) + 1);
-      rounds++;
-      if (rounds % 10 === 0) post('progress', { stage: 'comments', found: commentTimes(root).length });
+  // Instagram's comments live in their own scrolling region on desktop. Scrolling the
+  // window does not load older comments, and comments may be removed from the DOM as
+  // the region scrolls. Keep a deduplicated snapshot after EVERY interaction.
+  function commentScroller(root) {
+    var anchor = commentTimes(root)[0] || moreControl(root) || threadControls(root)[0];
+    for (var el = anchor; el && el !== document.body; el = el.parentElement) {
+      var style = getComputedStyle(el);
+      if (/(auto|scroll)/.test(style.overflowY) && el.scrollHeight > el.clientHeight + 30) return el;
     }
-    return rounds;
+    return document.scrollingElement || document.documentElement;
+  }
+  async function expand(root, opts, gen, code) {
+    var limit = opts.maxComments || 4000;
+    var deadline = Date.now() + (opts.maxMs || 5 * 60 * 1000);
+    // Two seconds was insufficient for a reply request to finish on slow connections.
+    var wait = Math.max(opts.waitMs || 4500, 3500);
+    var rounds = 0, idle = 0, stagnant = new WeakMap(), saved = new Map();
+    var expected = Math.max(0, Number(opts.expectedComments) || 0, (media[code] || {}).comments || 0);
+    function gather() {
+      readEmbedded();
+      readComments(root).forEach(function (c) { saved.set(c.id, c); });
+      // API replies and DOM-only comments can each contribute new IDs.
+      Object.keys(comments).forEach(function (id) {
+        var c = comments[id];
+        if (c.post && c.post !== code) return;
+        if (!saved.has(id)) saved.set(id, c);
+      });
+    }
+    function countFound() { return saved.size; }
+    gather();
+    while (gen === postGen && Date.now() < deadline && rounds < (opts.maxRounds || 500) && countFound() < limit) {
+      dismissPrompts();
+      gather();
+      var controls = threadControls(root).concat([moreControl(root)].filter(Boolean));
+      // A control can exist while scrolled out of the comments viewport. Prefer
+      // unexpanded threads, then load more top-level comments.
+      var target = controls.filter(function (b) {
+        return (stagnant.get(b) || 0) < 3;
+      })[0];
+      var before = countFound();
+      if (target) {
+        target.scrollIntoView({ block: 'nearest' });
+        await sleep(200);
+        if (gen !== postGen) break;
+        target.click();
+        var until = Math.min(deadline, Date.now() + wait);
+        while (gen === postGen && Date.now() < until) {
+          await sleep(250);
+          gather();
+          if (countFound() > before || !target.isConnected || !visible(target)) break;
+        }
+        if (countFound() === before) stagnant.set(target, (stagnant.get(target) || 0) + 1);
+        else stagnant.delete(target);
+      } else {
+        // Explicitly scroll the comments pane. Instagram may append the + control
+        // only when its bottom is reached and can lazy-render additional threads.
+        var scroller = commentScroller(root);
+        if (scroller && scroller !== document.scrollingElement) scroller.scrollTop = scroller.scrollHeight;
+        else window.scrollTo(0, document.documentElement.scrollHeight);
+        await sleep(wait);
+        gather();
+        if (countFound() === before) {
+          // Visit the beginning again, to catch replies in previously virtualized rows.
+          if (scroller && scroller !== document.scrollingElement) scroller.scrollTop = 0;
+          else window.scrollTo(0, 0);
+          await sleep(650);
+          gather();
+          idle++;
+        } else idle = 0;
+        if (idle >= 2) break;
+      }
+      rounds++;
+      if (rounds % 5 === 0) post('progress', { stage: 'comments', found: countFound(), total: expected });
+    }
+    gather();
+    var remainingControls = threadControls(root).length + (moreControl(root) ? 1 : 0);
+    var reachedLimit = countFound() >= limit || rounds >= (opts.maxRounds || 500) || Date.now() >= deadline;
+    // Count checks alone are insufficient: Instagram's grid total may exclude replies.
+    // The thread must also have no remaining expandable replies or load-more button.
+    var complete = gen === postGen && !reachedLimit && remainingControls === 0 &&
+      (expected === 0 || countFound() >= expected) && idle >= 2;
+    return { rounds: rounds, captured: Array.from(saved.values()), found: countFound(),
+             expected: expected, complete: complete, remainingControls: remainingControls,
+             reason: gen !== postGen ? 'cancelled' : reachedLimit ? 'limit or deadline' :
+               complete ? 'complete' : 'more comments may remain' };
   }
   async function readPost(opts) {
     opts = opts || {};
@@ -477,7 +550,7 @@ enum IGSessionAssets {
     var root = postRoot();
     var here = codeFrom(location.pathname) || codeFrom((q('a[href*="/p/"] time', root) || {}).parentElement && q('a[href*="/p/"] time', root).parentElement.getAttribute('href'));
     var code = here ? here.code : '';
-    var rounds = opts.comments === false ? 0 : await expand(root, opts, gen);
+    var progress = opts.comments === false ? null : await expand(root, opts, gen, code);
     readEmbedded();
     var net = media[code], found = [];
     if (!(net && net.items.length)) {
@@ -494,6 +567,7 @@ enum IGSessionAssets {
     var likesText = qa('a, span', root).filter(function (el) { return !el.closest('button') && !el.closest('li') && /^[\d.,KM]+\s+likes?$/i.test(text(el)); }).map(text)[0] || '';
     var authorLink = qa('header a[href]', root).filter(function (a) { return /^\/?[\w.]+\/?$/.test((a.getAttribute('href') || '').replace(/^https:\/\/www\.instagram\.com/, '')) && text(a); })[0];
     var useNet = !!(net && net.items.length);
+    var allComments = progress ? mergeComments(progress.captured, code) : [];
     return {
       code: code, author: authorLink ? text(authorLink) : (net ? net.owner : ''),
       caption: longText(captionRow) || (net ? net.caption : ''),
@@ -501,8 +575,11 @@ enum IGSessionAssets {
       likes: likesText ? count(likesText) : (net ? net.likes : 0),
       media: useNet ? net.items.map(function (x) { return { image: x.image, video: x.video, alt: x.alt, width: x.width, height: x.height }; }) : found,
       mediaFrom: useNet ? 'network' : 'page',
-      comments: opts.comments === false ? [] : mergeComments(readComments(root), code),
-      expandRounds: rounds
+      comments: allComments,
+      expectedComments: progress ? progress.expected : 0,
+      commentsComplete: progress ? progress.complete && allComments.length >= progress.expected : false,
+      commentsNote: progress ? progress.reason : '',
+      expandRounds: progress ? progress.rounds : 0
     };
   }
   function probe() {
