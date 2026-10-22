@@ -25,7 +25,6 @@ final class IGLiveGridModel: ObservableObject {
         guard IGCredentials.shared.isSignedIn else { return }
         phase = .loading
 
-        // Reuse the archiver's session when it's already running to avoid a second WKWebView.
         if IGPostArchiver.shared.isRunning {
             session = IGPostArchiver.shared.sharedSession()
             ownsSession = false
@@ -50,8 +49,8 @@ final class IGLiveGridModel: ObservableObject {
             return
         }
 
-        // Quick load: 4 idle rounds × 2.5 s = ~10 s max idle wait.
-        // The first API batch typically arrives in 3–5 s, so most profiles finish quickly.
+        // Quick load: 4 idle rounds × 2.5 s ≈ 10 s max idle.
+        // The first API batch typically arrives in 3–5 s.
         guard let grid = await s.readGrid(handle, maxMinutes: 2, idleRounds: 4) else {
             phase = .failed("Couldn't load posts. Try again.")
             cleanup()
@@ -81,8 +80,8 @@ final class IGLiveGridModel: ObservableObject {
 
 // MARK: - Live post detail sheet
 
-/// Shows one live Instagram post (media + caption) loaded via the signed-in session.
-/// Supports photo carousels (swipe left/right) and videos.
+/// Full post view loaded via the signed-in session: media carousel / video,
+/// caption, likes, and comments.
 @MainActor
 struct IGLivePostSheet: View {
     let handle: String
@@ -101,12 +100,8 @@ struct IGLivePostSheet: View {
                 Color.nvPaper.ignoresSafeArea()
                 if loading {
                     VStack(spacing: 12) {
-                        ProgressView()
-                            .controlSize(.large)
-                            .tint(Color.nvMuted)
-                        Text("Loading post")
-                            .font(.subheadline)
-                            .foregroundStyle(Color.nvMuted)
+                        ProgressView().controlSize(.large).tint(Color.nvMuted)
+                        Text("Loading post…").font(.subheadline).foregroundStyle(Color.nvMuted)
                     }
                 } else if let err = error {
                     ContentUnavailableView {
@@ -119,9 +114,7 @@ struct IGLivePostSheet: View {
             .navigationTitle("@\(handle)")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("Done") { dismiss() }
-                }
+                ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } }
             }
         }
         .task { await fetchPost() }
@@ -133,15 +126,20 @@ struct IGLivePostSheet: View {
     @ViewBuilder private func postContent(_ d: IGPostDetail) -> some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 0) {
-                mediaView(d)
+                mediaBlock(d)
                 actionsRow(d)
                 infoBlock(d)
+                if !d.comments.isEmpty {
+                    commentsBlock(d)
+                }
             }
-            .padding(.bottom, 32)
+            .padding(.bottom, 40)
         }
     }
 
-    @ViewBuilder private func mediaView(_ d: IGPostDetail) -> some View {
+    // MARK: Media
+
+    @ViewBuilder private func mediaBlock(_ d: IGPostDetail) -> some View {
         let current = d.media.indices.contains(mediaIndex) ? d.media[mediaIndex] : nil
         ZStack {
             Color.black
@@ -152,10 +150,8 @@ struct IGLivePostSheet: View {
                             RemoteImage(poster, maxPixel: 900, mode: .fit, placeholder: .clear)
                         }
                         PlayerSurface(player: player.player)
-                        if !player.isReady {
-                            ProgressView().tint(.white)
-                        }
-                        // Mute indicator
+                        if !player.isReady { ProgressView().tint(.white) }
+                        // Mute badge
                         Image(systemName: player.isMuted ? "speaker.slash.fill" : "speaker.wave.2.fill")
                             .font(.system(size: 11, weight: .bold))
                             .foregroundStyle(.white)
@@ -166,18 +162,13 @@ struct IGLivePostSheet: View {
                             .allowsHitTesting(false)
                     }
                     .task(id: mediaIndex) {
-                        if let url = m.mediaURL {
-                            player.load(url)
-                            player.isMuted = false
-                            player.play()
-                        }
+                        if let url = m.mediaURL { player.load(url); player.isMuted = false; player.play() }
                     }
                     .onTapGesture { player.isMuted.toggle() }
                 } else if let url = m.mediaURL {
                     RemoteImage(url, maxPixel: 1600, mode: .fit, placeholder: .clear)
                 }
             }
-            // Carousel badge
             if d.media.count > 1 {
                 Text("\(mediaIndex + 1)/\(d.media.count)")
                     .font(.caption.weight(.semibold))
@@ -191,51 +182,39 @@ struct IGLivePostSheet: View {
         }
         .aspectRatio(1, contentMode: .fit)
         .clipped()
-        .gesture(
-            DragGesture(minimumDistance: 40).onEnded { v in
-                guard abs(v.translation.width) > 40, abs(v.translation.width) > abs(v.translation.height) else { return }
-                if v.translation.width < 0, mediaIndex + 1 < d.media.count {
-                    mediaIndex += 1; player.stop()
-                } else if v.translation.width > 0, mediaIndex > 0 {
-                    mediaIndex -= 1; player.stop()
-                }
-            }
-        )
+        .gesture(swipeGesture(d))
     }
+
+    private func swipeGesture(_ d: IGPostDetail) -> some Gesture {
+        DragGesture(minimumDistance: 40).onEnded { v in
+            guard abs(v.translation.width) > 40, abs(v.translation.width) > abs(v.translation.height) else { return }
+            if v.translation.width < 0, mediaIndex + 1 < d.media.count { mediaIndex += 1; player.stop() }
+            else if v.translation.width > 0, mediaIndex > 0 { mediaIndex -= 1; player.stop() }
+        }
+    }
+
+    // MARK: Actions row
 
     private func actionsRow(_ d: IGPostDetail) -> some View {
         HStack(spacing: 20) {
             if d.media.count > 1 {
                 HStack(spacing: 4) {
                     ForEach(0..<min(d.media.count, 10), id: \.self) { i in
-                        Circle()
-                            .fill(i == mediaIndex ? Color.nvInk : Color.nvRule)
-                            .frame(width: 6, height: 6)
+                        Circle().fill(i == mediaIndex ? Color.nvInk : Color.nvRule).frame(width: 6, height: 6)
                     }
-                }
-                .frame(maxWidth: .infinity)
+                }.frame(maxWidth: .infinity)
             } else {
                 Spacer(minLength: 0)
             }
-            // Save current media
-            if let m = d.media.indices.contains(mediaIndex) ? d.media[mediaIndex] : nil,
-               let url = m.mediaURL {
+            if let m = d.media.indices.contains(mediaIndex) ? d.media[mediaIndex] : nil, let url = m.mediaURL {
                 Button {
                     downloads.fetch(url, kind: m.isVideo ? .video : .photo, baseName: "instagram-\(handle)")
-                } label: {
-                    Image(systemName: "arrow.down.to.line")
-                }
-                .accessibilityLabel("Save to Photos")
-            }
-            // Share
-            if let m = d.media.indices.contains(mediaIndex) ? d.media[mediaIndex] : nil,
-               let url = m.mediaURL {
+                } label: { Image(systemName: "arrow.down.to.line") }
+                    .accessibilityLabel("Save to Photos")
                 Button {
                     downloads.share(url, kind: m.isVideo ? .video : .photo, baseName: "instagram-\(handle)")
-                } label: {
-                    Image(systemName: "square.and.arrow.up")
-                }
-                .accessibilityLabel("Share")
+                } label: { Image(systemName: "square.and.arrow.up") }
+                    .accessibilityLabel("Share")
             }
         }
         .font(.system(size: 22))
@@ -245,31 +224,79 @@ struct IGLivePostSheet: View {
         .padding(.vertical, 10)
     }
 
+    // MARK: Caption / info
+
     @ViewBuilder private func infoBlock(_ d: IGPostDetail) -> some View {
         VStack(alignment: .leading, spacing: 6) {
             if d.likes > 0 {
-                Text("\(d.likes) likes")
-                    .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(Color.nvInk)
+                Text("\(d.likes) likes").font(.subheadline.weight(.semibold)).foregroundStyle(Color.nvInk)
             }
             if !d.caption.isEmpty {
                 (Text(handle).fontWeight(.semibold) + Text(" \(d.caption)"))
-                    .font(.subheadline)
-                    .foregroundStyle(Color.nvInk)
+                    .font(.subheadline).foregroundStyle(Color.nvInk)
                     .fixedSize(horizontal: false, vertical: true)
-                    .tint(Color.nvLink)
             }
-            if !d.date.isEmpty, let when = liveParseISO8601(d.date) {
+            if !d.date.isEmpty, let when = liveParseDate(d.date) {
                 Text(when.formatted(date: .abbreviated, time: .omitted))
-                    .font(.caption)
-                    .foregroundStyle(Color.nvMuted)
+                    .font(.caption).foregroundStyle(Color.nvMuted)
             }
         }
         .padding(.horizontal, 14)
         .padding(.top, 4)
     }
 
-    // MARK: Loading
+    // MARK: Comments
+
+    @ViewBuilder private func commentsBlock(_ d: IGPostDetail) -> some View {
+        let topLevel = d.comments.filter { $0.parent.isEmpty }
+        let replies: (String) -> [IGComment] = { id in d.comments.filter { $0.parent == id } }
+
+        VStack(alignment: .leading, spacing: 0) {
+            Divider().background(Color.nvRule).padding(.top, 12)
+            Text(d.comments.count == 1 ? "1 comment" : "\(d.comments.count) comments")
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(Color.nvInk)
+                .padding(.horizontal, 14)
+                .padding(.top, 12)
+                .padding(.bottom, 8)
+
+            ForEach(topLevel, id: \.id) { comment in
+                liveCommentRow(comment, indent: false)
+                ForEach(replies(comment.id), id: \.id) { reply in
+                    liveCommentRow(reply, indent: true)
+                }
+            }
+        }
+    }
+
+    private func liveCommentRow(_ c: IGComment, indent: Bool) -> some View {
+        HStack(alignment: .top, spacing: 10) {
+            RemoteImage(URL.remote(c.avatar), maxPixel: 80)
+                .frame(width: indent ? 26 : 32, height: indent ? 26 : 32)
+                .clipShape(Circle())
+                .accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: 4) {
+                    Text(c.author).font(.footnote.weight(.semibold)).foregroundStyle(Color.nvInk).lineLimit(1)
+                    if c.verified { Image(systemName: "checkmark.seal.fill").font(.caption2).foregroundStyle(Color.nvSignal) }
+                }
+                Text(c.text).font(.footnote).foregroundStyle(Color.nvInk).fixedSize(horizontal: false, vertical: true)
+                HStack(spacing: 10) {
+                    if !c.time.isEmpty, let when = liveParseDate(c.time) {
+                        Text(when.formatted(.relative(presentation: .named)))
+                    }
+                    if c.likes > 0 { Text("\(c.likes) like\(c.likes == 1 ? "" : "s")") }
+                }
+                .font(.caption2).foregroundStyle(Color.nvMuted)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(.leading, indent ? 28 + 14 : 14)
+        .padding(.trailing, 14)
+        .padding(.vertical, 6)
+    }
+
+    // MARK: Load
 
     private func fetchPost() async {
         let s: IGSession
@@ -287,19 +314,17 @@ struct IGLivePostSheet: View {
             if owns { s.teardown() }
             return
         }
-        let d = await s.readPost(gridItem.code, comments: false)
+        // Enable comments (maxMinutes: 2 bounds the expansion wait).
+        let d = await s.readPost(gridItem.code, comments: true, maxMinutes: 2)
         if owns { s.teardown() }
         loading = false
-        if let d {
-            detail = d
-        } else {
-            error = "Couldn't load this post."
-        }
+        if let d { detail = d } else { error = "Couldn't load this post." }
     }
 }
 
-/// ISO 8601 parser for Instagram's fractional-seconds timestamps.
-private func liveParseISO8601(_ s: String) -> Date? {
+// MARK: - Date helper
+
+private func liveParseDate(_ s: String) -> Date? {
     let f = ISO8601DateFormatter()
     for opts: ISO8601DateFormatter.Options in [[.withInternetDateTime, .withFractionalSeconds], [.withInternetDateTime]] {
         f.formatOptions = opts

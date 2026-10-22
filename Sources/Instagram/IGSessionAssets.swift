@@ -180,26 +180,14 @@ enum IGSessionAssets {
 
   // ---------- Profile grid: scroll to the very end ----------
 
-  // Instagram CDN thumbnail URLs embed the numeric media ID: .../MEDIAID_N_n.jpg
-  // That ID is a base-62 (Instagram alphabet) encoding of the shortcode, so we can
-  // reverse it to get the post code without needing a href on the grid anchor.
-  function codeFromCDN(url) {
-    var m = String(url || '').match(/\/(\d{15,20})_\d/);
-    if (!m) return null;
-    try {
-      var alpha = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-';
-      var n = BigInt(m[1]), code = '';
-      while (n > 0n) { code = alpha[Number(n % 64n)] + code; n = n / 64n; }
-      return code || null;
-    } catch (e) { return null; }
-  }
+  // NOTE: CDN URL → shortcode decoding was removed.
+  // The numeric ID in a CDN URL is the PHOTO/VIDEO FILE ID, not the POST shortcode.
+  // Decoding it produced wrong codes that showed carousel photos as fake duplicate posts
+  // and caused "not found" errors when opening them.
 
-  // Three sources, in order of reliability:
-  //   1. walk()-intercepted GraphQL API responses  (best: includes media URLs + metadata)
-  //   2. CDN URL shortcode decoding                (works for SSR-embedded thumbnails)
-  //   3. Legacy href="/p/CODE/" anchors            (pre-2025 Instagram)
   function gridCodes(found) {
-    // Source 1 — posts collected from API responses by walk()
+    // Primary source: walk()-intercepted GraphQL API responses.
+    // These carry the real post shortcode (o.code) and full media URLs.
     for (var code in media) {
       if (!found.has(code)) {
         var m = media[code];
@@ -211,18 +199,7 @@ enum IGSessionAssets {
           video: items.some(function (i) { return !!i.video; }) });
       }
     }
-    // Source 2 — decode shortcode from CDN thumbnail URL (Instagram 2025+: no href on grid anchors)
-    qa('main a').forEach(function (a) {
-      if (a.closest('[role="dialog"]')) return;
-      var img = q('img', a);
-      if (!img) return;
-      var src = img.currentSrc || img.getAttribute('src') || '';
-      if (!/^https?:/i.test(src)) return;
-      var code = codeFromCDN(src);
-      if (!code || found.has(code)) return;
-      found.set(code, { code: code, kind: 'p', thumb: src, pinned: false, multi: false, video: false });
-    });
-    // Source 3 — legacy href="/p/CODE/" (Instagram before ~2025)
+    // Legacy fallback: old Instagram used href="/p/CODE/" on grid anchors.
     qa('main a[href]').forEach(function (a) {
       if (a.closest('[role="dialog"]')) return;
       var c = codeFrom(a.getAttribute('href'));
@@ -257,7 +234,11 @@ enum IGSessionAssets {
       rounds++;
       if (rounds % 5 === 0) post('progress', { stage: 'grid', found: found.size, total: total });
     }
-    return { total: total, items: Array.from(found.values()), ended: !!total && found.size >= total, rounds: rounds,
+    // Sort newest-first to match Instagram's grid order.
+    var sorted = Array.from(found.values()).sort(function (a, b) {
+      return (media[b.code] ? media[b.code].taken : 0) - (media[a.code] ? media[a.code].taken : 0);
+    });
+    return { total: total, items: sorted, ended: !!total && found.size >= total, rounds: rounds,
              reason: total && found.size >= total ? 'all' : (idle >= idleWanted ? 'nothing more loaded' : 'time limit') };
   }
 
