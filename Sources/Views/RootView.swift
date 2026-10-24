@@ -36,6 +36,7 @@ struct RootView: View {
             DebugLog.shared.add(.app, "App is \(String(describing: phase))")
             CrawlCenter.shared.scenePhaseChanged(phase)
             WatchCenter.shared.scenePhaseChanged(phase)
+            if phase == .active { EngineRegistry.shared.appBecameActive() }
         }
     }
 }

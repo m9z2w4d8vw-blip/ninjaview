@@ -76,6 +76,8 @@ final class FeedModel: ObservableObject {
     private var screenHidden = false
     /// Which post tik.ninja's own viewer shows right now; comments and audio need it.
     private var openInPage: Int? = nil
+    /// The engine's page session the open post belongs to; a reload means opening it again.
+    private var openSession = -1
     private var savedPosts: [Int: StoredPost] = [:]
     private var engineWatch: AnyCancellable?
 
@@ -85,9 +87,10 @@ final class FeedModel: ObservableObject {
         if case .linked = source { first = 0 } else { first = max(0, start) }
         self.start = first
         current = first
-        if case .linked(_, let detail) = source {
+        if case .linked(let engine, let detail) = source {
             details[0] = detail
             openInPage = 0
+            openSession = engine.pageSession
         }
         player.isMuted = Self.prefersMuted
         // Grids grow as the page loads more; pass the engine's changes along.
@@ -311,6 +314,7 @@ final class FeedModel: ObservableObject {
                     let detail = try await engine.openItem(tab, target)
                     details[target] = detail
                     openInPage = target
+                    openSession = engine.pageSession
                 } catch let error as EngineError where error.code == "missing" && (missingRetries[target] ?? 0) < 2 {
                     // Not on tik.ninja's page yet: ask it for more posts, then try again.
                     missingRetries[target, default: 0] += 1
@@ -348,10 +352,11 @@ final class FeedModel: ObservableObject {
 
     /// Makes sure tik.ninja's viewer shows this post before asking it for comments or audio.
     func ensureOpen(_ index: Int) async throws {
-        if openInPage == index { return }
+        if openInPage == index, let engine = engine, openSession == engine.pageSession, !engine.isStale { return }
         guard case .live(let engine, let tab) = source else { throw EngineError.page("closed") }
         _ = try await engine.openItem(tab, index)
         openInPage = index
+        openSession = engine.pageSession
     }
 
     func close() {
@@ -384,6 +389,7 @@ struct PostFeedScreen: View {
             }
             .scrollPosition(id: $position, anchor: .center)
             .onAppear {
+                feed.engine?.refreshIfStale()
                 if didAppear {
                     feed.resumePlayback()
                     return

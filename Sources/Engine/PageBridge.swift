@@ -93,6 +93,8 @@ final class PageBridge: NSObject {
     private(set) var lastLoaded: Date?
     /// The HTTP status of the latest page load itself (not of the requests the page makes).
     private(set) var lastPageStatus: Int?
+    /// When the page was made and began loading (for a preloaded page, before anyone claimed it).
+    let pageMadeAt: Date
 
     private static var registry: [WeakPage] = []
 
@@ -105,6 +107,7 @@ final class PageBridge: NSObject {
         webView = prepared.webView
         router = prepared.router
         tag = prepared.tag.isEmpty ? PageTags.next() : prepared.tag
+        pageMadeAt = prepared.madeAt
         super.init()
         webView.navigationDelegate = self
         webView.uiDelegate = self
@@ -275,6 +278,10 @@ extension PageBridge: ScriptMessageTarget {
         case "ready":
             isReady = true
             DebugLog.shared.add(.web, "[\(label)] Page ready: \(body["url"] as? String ?? webView.url?.absoluteString ?? "?")")
+            // A page that got through has Cloudflare's cookies; new pages carry them.
+            if let url = webView.url, LinkRules.isTikNinja(url) {
+                WebFactory.shared.harvestCloudflareCookies(from: webView.configuration.websiteDataStore)
+            }
         case "log":
             let level: DebugLog.Level
             switch body["level"] as? String {

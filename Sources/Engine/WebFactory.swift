@@ -6,24 +6,37 @@ struct PreparedWebView {
     let router: ScriptRouter
     /// The page's name in the debug log ("P3"), given when it's made; PageBridge assigns one if empty.
     var tag: String = ""
+    /// When the page was made and began loading, so a preloaded page left waiting too long can be thrown away.
+    var madeAt = Date()
 }
 
-/// Builds engine pages that share one in-memory website data store, and keeps
-/// one preloaded on tik.ninja so opening a profile skips the cold page load.
+/// Builds engine pages and keeps one preloaded on tik.ninja so opening a profile skips the cold page load.
+///
+/// Every tik.ninja page gets its own in-memory website data store, so its own cookies and its own
+/// tik.ninja session: one page loading tik.ninja can't replace the session another page is using,
+/// which is what caused most "Forbidden" refusals while they all shared one. Cloudflare's own cookies
+/// (cf_clearance) are carried into each new page so it doesn't have to pass Cloudflare's check again.
+/// Instagram viewer pages share `dataStore`.
 @MainActor
 final class WebFactory: NSObject {
     static let shared = WebFactory()
     static let homeURL = URL(string: "https://tik.ninja/")!
     /// Appended to WebKit's user agent so tik.ninja sees ordinary Mobile Safari.
     static let safariSuffix = "Version/17.0 Mobile/15E148 Safari/604.1"
+    /// A preloaded page left waiting longer than this is thrown away; tik.ninja may have ended its session.
+    static let spareLifetime: TimeInterval = 10 * 60
 
     static var userAgent: String {
         let os = UIDevice.current.systemVersion.replacingOccurrences(of: ".", with: "_")
         return "Mozilla/5.0 (iPhone; CPU iPhone OS \(os) like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) \(safariSuffix)"
     }
 
-    /// Cookies and site storage live in memory only and vanish when the app quits.
+    /// The store Instagram viewer pages share. Cookies and site storage live in memory only and vanish when the app quits.
     private(set) var dataStore: WKWebsiteDataStore = .nonPersistent()
+    /// Cloudflare's cookies for tik.ninja, by name, carried into every new tik.ninja page. Never tik.ninja's own session cookie.
+    private var cloudflareCookies: [String: HTTPCookie] = [:]
+    /// The newest tik.ninja page's store, for the app's own requests that carry tik.ninja cookies.
+    private weak var newestTikStore: WKWebsiteDataStore?
     private var ruleList: WKContentRuleList?
     /// The compiled ad block list, for pages built outside this file (Instagram).
     var blockRules: WKContentRuleList? { ruleList }
@@ -33,12 +46,29 @@ final class WebFactory: NSObject {
     /// The preloaded page's name in the debug log, while nobody has claimed it.
     var spareTag: String? { spare?.tag }
 
+    /// Where the app's own tik.ninja requests (thumbnails, saved media) take their cookies from.
+    var cookieSource: WKWebsiteDataStore { newestTikStore ?? dataStore }
+
+    /// The Cloudflare cookies new pages get, for reports ("cf_clearance", or "none yet").
+    var clearanceSummary: String {
+        let names = carriedCookies.map(\.name).sorted()
+        return names.isEmpty ? "none yet" : names.joined(separator: ", ")
+    }
+
+    private var carriedCookies: [HTTPCookie] {
+        cloudflareCookies.values.filter { ($0.expiresDate ?? .distantFuture) > Date() }
+    }
+
     func warmUp() {
         compileBlockListIfNeeded()
         scheduleSpare(after: 0.2)
     }
 
     func dequeue() -> PreparedWebView {
+        if let waiting = spare, Date().timeIntervalSince(waiting.madeAt) > Self.spareLifetime {
+            DebugLog.shared.add(.web, "[\(waiting.tag) spare] Threw away the preloaded page after it waited \(PageBridge.ago(waiting.madeAt)); tik.ninja may have ended its session")
+            discardSpare()
+        }
         let prepared = spare ?? make()
         spare = nil
         scheduleSpare(after: 3)
@@ -52,11 +82,61 @@ final class WebFactory: NSObject {
 
     func clearBrowsingData() async {
         discardSpare()
+        cloudflareCookies.removeAll()
         let old = dataStore
         dataStore = .nonPersistent()
         await old.removeData(ofTypes: WKWebsiteDataStore.allWebsiteDataTypes(), modifiedSince: .distantPast)
-        DebugLog.shared.add(.web, "Cleared site data")
+        var cleared = 0
+        for page in PageBridge.openPages {
+            let store = page.webView.configuration.websiteDataStore
+            guard store !== old, store !== Self.instagramSessionStore else { continue }
+            await store.removeData(ofTypes: WKWebsiteDataStore.allWebsiteDataTypes(), modifiedSince: .distantPast)
+            cleared += 1
+        }
+        DebugLog.shared.add(.web, "Cleared site data: \(cleared) open pages' own sessions, the Instagram viewer pages' store, and the Cloudflare cookies new pages would get")
         scheduleSpare(after: 0.5)
+    }
+
+    // MARK: Sessions
+
+    /// Remembers Cloudflare's cookies from a tik.ninja page that got through, for the pages made after it.
+    func harvestCloudflareCookies(from store: WKWebsiteDataStore) {
+        Task { @MainActor in
+            let cookies = await store.httpCookieStore.allCookies()
+            var learned: [String] = []
+            for cookie in cookies where Self.isCloudflare(cookie) {
+                if cloudflareCookies[cookie.name]?.value != cookie.value { learned.append(cookie.name) }
+                cloudflareCookies[cookie.name] = cookie
+            }
+            if !learned.isEmpty {
+                DebugLog.shared.add(.web, "New tik.ninja pages will carry Cloudflare's \(learned.sorted().joined(separator: ", "))")
+            }
+        }
+    }
+
+    /// Clears a page's own cookies except Cloudflare's, so its next load starts a brand-new tik.ninja
+    /// session. Returns how many cookies went.
+    func clearSession(of webView: WKWebView) async -> Int {
+        let store = webView.configuration.websiteDataStore
+        guard store !== dataStore, store !== Self.instagramSessionStore else { return 0 }
+        let cookies = await store.httpCookieStore.allCookies()
+        let kept = cookies.filter { Self.isCloudflare($0) }
+        await store.removeData(ofTypes: [WKWebsiteDataTypeCookies], modifiedSince: .distantPast)
+        for cookie in kept { await Self.set(cookie, in: store) }
+        return cookies.count - kept.count
+    }
+
+    /// cf_clearance, __cf_bm, _cfuvid and the like: Cloudflare's cookies, not tik.ninja's session.
+    nonisolated static func isCloudflare(_ cookie: HTTPCookie) -> Bool {
+        let name = cookie.name.lowercased()
+        let domain = cookie.domain.lowercased().trimmingCharacters(in: CharacterSet(charactersIn: "."))
+        return (name.hasPrefix("cf_") || name.hasPrefix("__cf") || name.hasPrefix("_cf")) && NetLedger.isTikNinja(domain)
+    }
+
+    private static func set(_ cookie: HTTPCookie, in store: WKWebsiteDataStore) async {
+        await withCheckedContinuation { (done: CheckedContinuation<Void, Never>) in
+            store.httpCookieStore.setCookie(cookie) { done.resume() }
+        }
     }
 
     private func discardSpare() {
@@ -68,7 +148,6 @@ final class WebFactory: NSObject {
         }
         spare = nil
     }
-
     private func scheduleSpare(after delay: TimeInterval) {
         guard spare == nil, spareTask == nil else { return }
         spareTask = Task { [weak self] in
@@ -80,7 +159,6 @@ final class WebFactory: NSObject {
             self.spareTask = nil
         }
     }
-
     private func compileBlockListIfNeeded() {
         guard ruleList == nil, compileTask == nil else { return }
         let json = WebAssets.blockListJSON
@@ -90,7 +168,6 @@ final class WebFactory: NSObject {
             DebugLog.shared.add(.web, list == nil ? "Ad block list unavailable" : "Ad block list ready")
         }
     }
-
     private static func compile(_ json: String) async -> WKContentRuleList? {
         await withCheckedContinuation { continuation in
             let store: WKContentRuleListStore? = WKContentRuleListStore.default()
@@ -107,8 +184,9 @@ final class WebFactory: NSObject {
 
     private func make() -> PreparedWebView {
         let settings = AppSettings.shared
+        let store = WKWebsiteDataStore.nonPersistent()
         let config = WKWebViewConfiguration()
-        config.websiteDataStore = dataStore
+        config.websiteDataStore = store
         config.allowsInlineMediaPlayback = true
         config.allowsPictureInPictureMediaPlayback = true
         // Nobody watches the engine page directly, so it never autoplays anything.
@@ -138,9 +216,23 @@ final class WebFactory: NSObject {
         webView.isInspectable = true
         webView.navigationDelegate = self
         EngineDock.park(webView)
-        webView.load(URLRequest(url: Self.homeURL))
+        newestTikStore = store
         let tag = PageTags.next()
-        DebugLog.shared.add(.web, "[\(tag) spare] Preloading tik.ninja (ad blocking \(settings.blockAds && ruleList != nil ? "on" : "off")\(settings.verboseNetLog ? ", verbose network log" : ""))")
+        let carried = carriedCookies
+        var note = "its own session, ad blocking \(settings.blockAds && ruleList != nil ? "on" : "off")"
+        note += carried.isEmpty ? ", no Cloudflare cookies to carry yet" : ", carrying Cloudflare's \(carried.map(\.name).sorted().joined(separator: ", "))"
+        if settings.verboseNetLog { note += ", verbose network log" }
+        DebugLog.shared.add(.web, "[\(tag) spare] Preloading tik.ninja (\(note))")
+        let request = URLRequest(url: Self.homeURL)
+        if carried.isEmpty {
+            webView.load(request)
+        } else {
+            // It loads once Cloudflare's cookies are in its jar, so its very first request carries them.
+            Task { @MainActor in
+                for cookie in carried { await Self.set(cookie, in: store) }
+                webView.load(request)
+            }
+        }
         return PreparedWebView(webView: webView, router: router, tag: tag)
     }
 }

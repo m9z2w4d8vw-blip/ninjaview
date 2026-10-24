@@ -56,6 +56,7 @@ enum Diagnostics {
         lines.append("Settings: appearance \(settings.appearance.rawValue), history \(onOff(settings.keepHistory)), ad blocking \(onOff(settings.blockAds)), tidy page \(onOff(settings.cleanLayout)), offline copies \(onOff(settings.prefetch)), comments \(onOff(settings.saveComments)), follower lists \(onOff(settings.saveLists)), verbose network log \(onOff(settings.verboseNetLog))")
         lines.append("Open: \(EngineRegistry.shared.count) profile pages, \(FeedRegistry.shared.count) post lists, \(IGRegistry.shared.count) Instagram pages")
         lines.append("Hidden pages: \(pageList())")
+        lines.append("tik.ninja sessions: one per hidden page; Cloudflare cookies new pages carry: \(WebFactory.shared.clearanceSummary)")
         let igArchives = IGArchive.shared.sortedAccounts
         lines.append("Instagram archives: \(igArchives.count)")
         for account in igArchives {
@@ -126,20 +127,20 @@ enum Diagnostics {
         return lines
     }
 
-    /// tik.ninja's cookies by name, from the shared in-memory store (values are never shown).
-    static func cookieLine() async -> String {
-        let cookies = await WebFactory.shared.dataStore.httpCookieStore.allCookies()
+    /// A page's tik.ninja cookies by name (values are never shown). Each page has its own jar.
+    static func cookieLine(store: WKWebsiteDataStore) async -> String {
+        let cookies = await store.httpCookieStore.allCookies()
         let mine = cookies.filter { cookie in
             NetLedger.isTikNinja(cookie.domain.lowercased().trimmingCharacters(in: CharacterSet(charactersIn: ".")))
         }
-        guard !mine.isEmpty else { return "tik.ninja cookies: none" }
+        guard !mine.isEmpty else { return "this page's tik.ninja cookies: none" }
         let names = mine.map { cookie -> String in
             var flags: [String] = []
             if cookie.isHTTPOnly { flags.append("HttpOnly") }
             flags.append(cookie.expiresDate.map { "expires \(stamp($0))" } ?? "until NinjaView quits")
             return "\(cookie.name) (\(flags.joined(separator: ", ")))"
         }
-        return "tik.ninja cookies (names only): " + names.joined(separator: "; ")
+        return "this page's tik.ninja cookies (names only): " + names.joined(separator: "; ")
     }
 
     /// The page's answer to window.__nv.diagnose(), as report lines.
@@ -226,6 +227,9 @@ enum Diagnostics {
         var out: [String] = []
         let lower = shown.lowercased()
         let answers = answerStatuses(trace)
+        if lower.contains("(http 403)") || lower.contains("forbidden") || answers.contains(403) {
+            out.append("HTTP 403 here means tik.ninja refused the session this page was using. Every hidden page has its own session, and a page starts a new one on its own (up to twice per lookup) when this happens. A 403 that survives that suggests tik.ninja is refusing new sessions from this connection for now.")
+        }
         if lower.contains("get past the check") {
             out.append("There's no search box on the page, so tik.ninja is most likely showing a verification page (Cloudflare) or its layout changed. \"the page right after\" lists any verification elements and the page's visible text. Show page lets you get past a check.")
         }

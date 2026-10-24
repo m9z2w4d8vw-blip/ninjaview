@@ -8,7 +8,7 @@ import WebKit
 enum CookieBridge {
     static func header(for url: URL) async -> String? {
         guard let host = url.host?.lowercased() else { return nil }
-        let cookies = await WebFactory.shared.dataStore.httpCookieStore.allCookies()
+        let cookies = await WebFactory.shared.cookieSource.httpCookieStore.allCookies()
         let matching = cookies.filter { cookie in
             let domain = cookie.domain.lowercased().trimmingCharacters(in: CharacterSet(charactersIn: "."))
             return host == domain || host.hasSuffix("." + domain)

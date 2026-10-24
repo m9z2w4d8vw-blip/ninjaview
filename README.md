@@ -122,6 +122,10 @@ Copy it, or export the full log from the same screen.
 
 In the debug log, lines from a hidden page start with its name, like `[P3 screen @name]`, `[P5 session copy @name]` or `[P7 watch check @name]`. The **traffic** area counts every request that reaches tik.ninja, writes one line a minute while there's traffic, and writes a full report the moment tik.ninja refuses something: the refused request with the headers sent and received and the start of the answer, Retry-After if tik.ninja sent it, the requests in the 10 seconds, minute and five minutes before it, and what was running. **Settings > Diagnostics > Verbose network log** adds headers and the start of the answer to requests that worked too, from the next profile you open.
 
+Every hidden tik.ninja page has its own session (its own cookie jar), so one page loading tik.ninja can't knock out the session another page is using; Cloudflare's clearance cookie is carried into each new page. When tik.ninja refuses a page's session (HTTP 403: "⚠ Forbidden" or "The operation failed for an operation-specific reason"), the page starts a new session and tries again on its own. A page whose session went 18 minutes without an answer (the phone slept, say) starts a new one before it's used again: a profile on screen when the app comes back, or when you return to it; an offline copy or archive starts over on a fresh page and skips what it already saved. A preloaded page that waited more than 10 minutes is thrown away.
+
+Errors in tik.ninja's status line are recognized by its error styling and by the page's own refused requests, so a refused lookup ends in under a second with the reason (rate limit, refused session, not found) instead of waiting 30 seconds. A list tik.ninja refuses shows why with Try again instead of looking finished, and copies wait out Retry-After and ask again rather than saving it as empty or skipping posts.
+
 ## Project layout
 
 ```

@@ -35,7 +35,10 @@ struct ProfileScreen: View {
                         .accessibilityLabel("More")
                 }
             }
-            .onAppear { engine.start() }
+            .onAppear {
+                engine.start()
+                engine.refreshIfStale()
+            }
             .task(id: engine.header?.key) { await profileDidLoad() }
             .onChange(of: engine.linkedPost) { _, post in
                 if let post { app.openPosts(.linked(engine, post), index: 0) }
@@ -143,7 +146,7 @@ struct ProfileScreen: View {
             }
         }
         .refreshable {
-            await engine.reload()
+            await engine.retry()
             await profileDidLoad()
         }
     }
@@ -295,7 +298,7 @@ struct ProfileScreen: View {
 
     private func retry() {
         Task {
-            await engine.reload()
+            await engine.retry()
             await profileDidLoad()
         }
     }

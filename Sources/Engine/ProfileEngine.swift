@@ -43,6 +43,17 @@ final class EngineRegistry {
         }
         if retired.count > 24 { retired.removeAll() }
     }
+
+    /// The app came back to the foreground. The profile on screen starts a new tik.ninja session now
+    /// if its old one went stale while the phone slept; the others do when they're shown again.
+    func appBecameActive() {
+        guard let top = AppModel.shared.path.last else { return }
+        switch top.kind {
+        case .live: engines[top.id]?.refreshIfStale()
+        case .posts: FeedRegistry.shared.feed(for: top.id)?.engine?.refreshIfStale()
+        default: break
+        }
+    }
 }
 
 struct LookupResult: Decodable {
@@ -50,8 +61,19 @@ struct LookupResult: Decodable {
     let item: ItemDetail?
     let status: String
     let error: String
+    /// What the page reported: limited (429), forbidden (403), rejected (422), notfound, private or other.
+    let kind: String?
+    /// The seconds tik.ninja asked to wait, when it sent Retry-After.
+    let retryAfter: Int?
     /// The lookup step by step, with the page's requests merged in (see `lookup` in WebAssets).
     let trace: [String]?
+}
+
+/// What a page call may report beside its usual answer when tik.ninja refused it (engine version 4):
+/// limited (429), forbidden (403) or rejected (422), and the seconds Retry-After asked for.
+struct RefusalInfo: Decodable {
+    let refused: String?
+    let retryAfter: Int?
 }
 
 struct TabSnapshot: Decodable {
@@ -65,6 +87,8 @@ struct TabSnapshot: Decodable {
     let items: [PostItem]
     let users: [UserCard]
     let message: String
+    let refused: String?
+    let retryAfter: Int?
 }
 
 struct TabState {
@@ -76,12 +100,21 @@ struct TabState {
     var endText = ""
     var message = ""
     var error: String?
+    /// Why tik.ninja refused this list (limited, forbidden, rejected or error); nil when it didn't.
+    var refusal: String?
+    var refusedAt: Date?
+    var retryAfter = 0
 
     var isEmpty: Bool { items.isEmpty && users.isEmpty }
 }
 
 /// Drives one hidden tik.ninja page and publishes everything the native
 /// profile screen, post viewer and comments sheet show.
+///
+/// Each page has its own tik.ninja session (see WebFactory). When tik.ninja refuses that session
+/// (HTTP 403), or it has gone long enough without an answer that tik.ninja has probably ended it,
+/// the page starts a new one: its cookies are cleared (Cloudflare's kept), it reloads, and the
+/// account is looked up again.
 @MainActor
 final class ProfileEngine: ObservableObject {
     enum Phase: Equatable {
@@ -89,6 +122,12 @@ final class ProfileEngine: ObservableObject {
         case ready
         case failed(EngineFailure)
     }
+
+    /// tik.ninja ends a session that goes about 20 minutes without a request (the debug logs show
+    /// refusals starting there), so a page whose last answer is older than this starts a new one first.
+    static let staleAfter: TimeInterval = 18 * 60
+    /// New sessions a lookup may start on its own before it shows a failure.
+    static let maxAutoHeals = 2
 
     let route: Route
     let bridge: PageBridge
@@ -110,15 +149,26 @@ final class ProfileEngine: ObservableObject {
     /// Everything known about the latest failure, for the error screen's Debug details. It arrives
     /// a moment after the failure, once the page has been asked about its own state.
     @Published private(set) var failureReport: String? = nil
+    /// Goes up every time the page reloads. Anything that relied on the page's state (a post it
+    /// had open) has to do it again.
+    @Published private(set) var pageSession = 0
 
     private let runner = SerialRunner()
     private var started = false
     private var generation = 0
     private var slowTask: Task<Void, Never>?
-    /// Lookups this page has started; Try again and pull to refresh each add one.
+    /// Lookups this page has started; Try again, pull to refresh and new sessions each add one.
     private(set) var attempts = 0
     private var lastFailure: Date?
     private var lastLoggedStatus = ""
+    /// When this page's tik.ninja session last did something: the page loading, or an API answer that got through.
+    private var lastSessionUse: Date
+    /// When tik.ninja last refused this page's session (HTTP 403). A reload clears it.
+    private(set) var sessionRefusedAt: Date?
+    /// New sessions started on their own since the last lookup that worked, or since someone tapped Try again.
+    private var autoHeals = 0
+    private var refreshing = false
+    private var lastReactiveRefresh: Date?
 
     /// Background downloads run headless: no history entries, and page dialogs are dismissed.
     let headless: Bool
@@ -129,7 +179,9 @@ final class ProfileEngine: ObservableObject {
         self.route = route
         self.headless = headless
         self.purpose = purpose ?? (headless ? "hidden lookup" : "screen")
-        bridge = PageBridge(WebFactory.shared.dequeue())
+        let page = PageBridge(WebFactory.shared.dequeue())
+        bridge = page
+        lastSessionUse = page.pageMadeAt
         bridge.delegate = self
         bridge.owner = self.purpose + " " + (route.handle.map { "@" + $0 } ?? String(route.query.prefix(60)))
     }
@@ -144,9 +196,17 @@ final class ProfileEngine: ObservableObject {
 
     func reload() async {
         generation += 1
+        pageSession += 1
+        sessionRefusedAt = nil
         DebugLog.shared.add(.web, "[\(bridge.label)] Reloading tik.ninja's page, then looking up \(route.query) again")
         bridge.reload()
         await boot()
+    }
+
+    /// Try again and pull to refresh: someone asked, so the page may start new sessions on its own again.
+    func retry() async {
+        autoHeals = 0
+        await reload()
     }
 
     func teardown() {
@@ -177,6 +237,14 @@ final class ProfileEngine: ObservableObject {
             return
         }
         guard gen == generation else { return }
+        // A session that has gone this long without an answer would only be refused: start a new one first.
+        if isStale && autoHeals < Self.maxAutoHeals && !bridge.isTornDown {
+            autoHeals += 1
+            await refreshSession("it went \(PageBridge.ago(lastSessionUse)) without an answer, long enough for tik.ninja to end it")
+            return
+        }
+        // Grid tabs that had loaded come back after a reload (their first page).
+        let restore = ProfileTab.allCases.filter { !$0.showsUsers && $0 != selectedTab && tabs[$0]?.isEmpty == false }
         do {
             let query = route.query
             let json = try await runner.run { [bridge] in
@@ -189,28 +257,37 @@ final class ProfileEngine: ObservableObject {
             if let profile = result.profile {
                 DebugLog.shared.add(.web, "[\(bridge.label)] Lookup #\(attempt) found @\(profile.handle) in \(PageBridge.ms(since: began)) ms" + Self.requestSummary(trace))
                 lastFailure = nil
+                autoHeals = 0
                 header = profile
                 tabs = [:]
                 analytics = nil
                 phase = .ready
                 if !headless { AppModel.shared.didLoad(profile) }
                 if let item = result.item { linkedPost = item }
-                await load(selectedTab)
+                await loadTab(selectedTab)
+                for tab in restore {
+                    guard gen == generation else { return }
+                    await loadTab(tab)
+                }
             } else if let item = result.item {
                 DebugLog.shared.add(.web, "[\(bridge.label)] Lookup #\(attempt) opened a post in \(PageBridge.ms(since: began)) ms" + Self.requestSummary(trace))
                 lastFailure = nil
+                autoHeals = 0
                 phase = .ready
                 linkedPost = item
             } else {
+                let kind = result.kind ?? ""
+                if kind == "forbidden" && autoHeals < Self.maxAutoHeals && !bridge.isTornDown {
+                    autoHeals += 1
+                    DebugLog.shared.warn(.web, "[\(bridge.label)] Lookup #\(attempt): tik.ninja refused this page's session (\(result.status.isEmpty ? "HTTP 403" : result.status)); trying again in a new session")
+                    await refreshSession("tik.ninja refused its session during a lookup")
+                    return
+                }
                 let state = await pageState()
                 guard gen == generation else { return }
-                if result.error == "status" {
-                    fail("tik.ninja couldn't show this account", result.status, trace: trace, state: state)
-                } else {
-                    fail("No profile came back", result.status.isEmpty
-                         ? "tik.ninja didn't return this account in time. It may not exist, or the site is busy."
-                         : result.status, trace: trace, state: state)
-                }
+                let failure = Self.lookupFailure(kind: kind, status: result.status, retryAfter: result.retryAfter ?? 0,
+                                                 timedOut: result.error != "status")
+                fail(failure.title, failure.detail, trace: trace, state: state)
             }
         } catch {
             guard gen == generation else { return }
@@ -251,6 +328,80 @@ final class ProfileEngine: ObservableObject {
         isSlow = false
     }
 
+    // MARK: Sessions
+
+    /// How long this page's tik.ninja session has gone without an answer.
+    var sessionIdle: TimeInterval { Date().timeIntervalSince(lastSessionUse) }
+    /// Long enough that tik.ninja has probably ended the session.
+    var isStale: Bool { sessionIdle >= Self.staleAfter }
+    /// For hidden pages (copies and archives): the session was refused or is probably over, so the
+    /// work should start over on a fresh page.
+    var needsFreshPage: Bool { sessionRefusedAt != nil || isStale }
+
+    /// A profile on screen whose session went stale (the phone slept, say) starts a new one now,
+    /// rather than letting the next tap be refused.
+    func refreshIfStale() {
+        guard !headless, phase == .ready, isStale, !refreshing, !bridge.isTornDown else { return }
+        Task { await refreshNow("it went \(PageBridge.ago(lastSessionUse)) without an answer") }
+    }
+
+    /// Before an action on a profile on screen: a stale session is replaced first, and a new session
+    /// that's already starting is waited for.
+    func freshen() async {
+        guard !headless else { return }
+        if phase == .ready && isStale && !refreshing && !bridge.isTornDown {
+            await refreshNow("it went \(PageBridge.ago(lastSessionUse)) without an answer")
+        }
+        var waited = 0
+        while refreshing && waited < 600 {
+            try? await Task.sleep(nanoseconds: 100_000_000)
+            waited += 1
+        }
+    }
+
+    private func refreshNow(_ why: String) async {
+        guard !refreshing else { return }
+        refreshing = true
+        defer { refreshing = false }
+        autoHeals = 0
+        await refreshSession(why)
+    }
+
+    /// Starts this page over in a brand-new tik.ninja session: its own cookies are cleared (Cloudflare's
+    /// kept), the page reloads, and the account is looked up again with the tabs that had loaded.
+    private func refreshSession(_ why: String) async {
+        guard !bridge.isTornDown else { return }
+        let removed = await WebFactory.shared.clearSession(of: bridge.webView)
+        DebugLog.shared.add(.web, "[\(bridge.label)] Starting a new tik.ninja session for this page (\(why)); cleared \(removed) of its cookies")
+        await reload()
+    }
+
+    /// A page call tik.ninja refused becomes an error the caller can act on.
+    private func raiseRefusal(_ json: String) throws {
+        guard let info = try? JSONDecoder().decode(RefusalInfo.self, from: Data(json.utf8)),
+              let kind = info.refused, !kind.isEmpty else { return }
+        let wait = info.retryAfter ?? 0
+        noteRefusal(kind, retryAfter: wait)
+        throw EngineError.refusal(kind, retryAfter: wait)
+    }
+
+    private func noteRefusal(_ kind: String, retryAfter: Int) {
+        switch kind {
+        case "forbidden":
+            sessionRefusedAt = Date()
+            DebugLog.shared.warn(.web, "[\(bridge.label)] tik.ninja refused this page's session (HTTP 403)")
+            // A profile on screen starts a new session on its own, at most every two minutes.
+            if !headless && phase == .ready && !refreshing && Date().timeIntervalSince(lastReactiveRefresh ?? .distantPast) > 120 {
+                lastReactiveRefresh = Date()
+                Task { await self.refreshNow("tik.ninja refused its session (HTTP 403)") }
+            }
+        case "limited":
+            DebugLog.shared.warn(.web, "[\(bridge.label)] tik.ninja is limiting requests (HTTP 429)" + (retryAfter > 0 ? "; it asked to wait \(retryAfter) s" : ""))
+        default:
+            DebugLog.shared.warn(.web, "[\(bridge.label)] tik.ninja refused a request (\(kind))")
+        }
+    }
+
     // MARK: Failure reports
 
     /// The page's own account of itself (window.__nv.diagnose), as report lines; nil when it doesn't answer.
@@ -267,11 +418,15 @@ final class ProfileEngine: ObservableObject {
     func buildReport(title: String, detail: String, trace: [String], state: [String]?) async -> String {
         var pageLines = state
         if pageLines == nil { pageLines = await pageState() }
-        let cookies = await Diagnostics.cookieLine()
+        let cookies = await Diagnostics.cookieLine(store: bridge.webView.configuration.websiteDataStore)
         var lines = ["FAILURE REPORT: \(title)"]
         lines.append("when: \(Diagnostics.stamp(Date())), NinjaView \(Bundle.main.versionString)")
         lines.append("page: \(bridge.label) \u{00B7} \(bridge.stateSummary)")
         lines.append("query: \(route.query) \u{00B7} attempt \(attempts) on this page" + (headless ? " \u{00B7} a hidden page, nothing on screen" : ""))
+        var session = "session: this page's own; last answer \(PageBridge.ago(lastSessionUse)) ago"
+        if let sessionRefusedAt { session += ", refused (403) \(PageBridge.ago(sessionRefusedAt)) ago" }
+        session += ", \(autoHeals) new sessions started on its own since the last lookup that worked"
+        lines.append(session)
         if !detail.isEmpty { lines.append("shown: \(detail)") }
         if !trace.isEmpty {
             lines.append("the lookup, step by step (time since it started; \u{2190} marks an answer the page got):")
@@ -323,7 +478,41 @@ final class ProfileEngine: ObservableObject {
     /// tik.ninja shows its errors in the status line or where results would be.
     nonisolated static func looksLikeSiteError(_ text: String) -> Bool {
         let lower = text.lowercased()
-        return ["error", "try again", "forbidden", "429", "too many", "rate limit", "failed"].contains { lower.contains($0) }
+        return ["error", "try again", "forbidden", "429", "too many", "slow down", "rate limit", "failed"].contains { lower.contains($0) }
+    }
+
+    /// limited, forbidden or error, from the text tik.ninja shows in place of a list.
+    nonisolated static func refusalKind(of text: String) -> String {
+        let lower = text.lowercased()
+        if ["too many", "slow down", "429", "rate limit"].contains(where: { lower.contains($0) }) { return "limited" }
+        if ["forbidden", "403", "operation failed", "operation-specific"].contains(where: { lower.contains($0) }) { return "forbidden" }
+        return "error"
+    }
+
+    /// The title and detail a failed lookup shows, by what the page reported.
+    nonisolated static func lookupFailure(kind: String, status: String, retryAfter: Int, timedOut: Bool) -> (title: String, detail: String) {
+        switch kind {
+        case "limited":
+            let shown = status.isEmpty ? "Too many requests." : status
+            let code = shown.contains("429") ? "" : " (HTTP 429)"
+            return ("tik.ninja is limiting requests", "\(shown)\(code) Try again in \(max(retryAfter, 10)) seconds.")
+        case "forbidden":
+            return ("tik.ninja refused this page's session",
+                    "\(status.isEmpty ? "Forbidden" : status) (HTTP 403). A new session didn't help either; try again in a minute.")
+        case "rejected":
+            return ("tik.ninja rejected the lookup", "\(status.isEmpty ? "The request was rejected" : status) (HTTP 422).")
+        case "notfound":
+            return ("Account not found", status)
+        case "private":
+            return ("This account is private", status)
+        default:
+            if timedOut {
+                return ("No profile came back", status.isEmpty
+                        ? "tik.ninja didn't return this account in time. It may not exist, or the site is busy."
+                        : status)
+            }
+            return ("tik.ninja couldn't show this account", status)
+        }
     }
 
     // MARK: Tabs
@@ -334,9 +523,16 @@ final class ProfileEngine: ObservableObject {
     }
 
     func load(_ tab: ProfileTab) async {
+        await freshen()
+        await loadTab(tab)
+    }
+
+    private func loadTab(_ tab: ProfileTab) async {
         guard phase == .ready, header != nil else { return }
         var state = tabs[tab] ?? TabState()
         guard !state.isLoading else { return }
+        // A list that was refused may need a second click before tik.ninja asks for it again.
+        let again = state.refusal != nil || (state.error != nil && state.isEmpty)
         state.isLoading = true
         state.error = nil
         tabs[tab] = state
@@ -344,7 +540,7 @@ final class ProfileEngine: ObservableObject {
         let name = tab.rawValue
         do {
             let json = try await runner.run { [bridge] in
-                try await bridge.call("return JSON.stringify(await window.__nv.openTab(t));", ["t": name], timeout: 40)
+                try await bridge.call("return JSON.stringify(await window.__nv.openTab(t, a));", ["t": name, "a": again], timeout: 50)
             }
             guard gen == generation else { return }
             apply(try bridge.decode(TabSnapshot.self, json), to: tab, previousCount: nil)
@@ -356,7 +552,11 @@ final class ProfileEngine: ObservableObject {
     }
 
     func loadMore(_ tab: ProfileTab) async {
+        await freshen()
         guard var state = tabs[tab], state.loaded, !state.isLoading, !state.exhausted else { return }
+        // Asking again before tik.ninja's Retry-After is up would only be refused again.
+        if state.refusal == "limited", let at = state.refusedAt,
+           Date().timeIntervalSince(at) < Double(max(state.retryAfter, 10)) { return }
         let before = state.items.count + state.users.count
         state.isLoading = true
         tabs[tab] = state
@@ -383,24 +583,48 @@ final class ProfileEngine: ObservableObject {
         state.isLoading = false
         state.endText = Self.tidy(snap.endText)
         state.message = Self.tidy(snap.message)
-        if snap.loading && count == 0 {
-            state.loaded = false
-            state.error = "tik.ninja is still loading this tab."
-        } else {
-            state.loaded = true
-            state.error = nil
+        var refusal = snap.refused ?? ""
+        // tik.ninja's error shown in place of the list counts as a refusal even when its request wasn't seen.
+        if refusal.isEmpty && count == 0 && Self.looksLikeSiteError(state.message) {
+            refusal = Self.refusalKind(of: state.message)
         }
-        if let previousCount {
-            // Stop paging once the site says it's done or an attempt added nothing.
-            state.exhausted = snap.ended || (count <= previousCount && !snap.hasMore)
+        state.retryAfter = snap.retryAfter ?? 0
+        if refusal.isEmpty {
+            state.refusal = nil
+            state.refusedAt = nil
+            if snap.loading && count == 0 {
+                state.loaded = false
+                state.error = "tik.ninja is still loading this tab."
+            } else {
+                state.loaded = true
+                state.error = nil
+            }
+            if let previousCount {
+                // Stop paging once the site says it's done or an attempt added nothing.
+                state.exhausted = snap.ended || (count <= previousCount && !snap.hasMore)
+            } else {
+                state.exhausted = snap.ended || (count == 0 && !snap.loading)
+            }
         } else {
-            state.exhausted = snap.ended || (count == 0 && !snap.loading)
+            // Never taken as the end of the list: it stays open for Try again, and copies wait and retry.
+            state.refusal = refusal
+            state.refusedAt = Date()
+            state.loaded = count > 0
+            state.exhausted = false
+            state.error = refusal == "error"
+                ? (state.message.isEmpty ? "tik.ninja couldn't load this list." : state.message)
+                : EngineError.refusal(refusal, retryAfter: state.retryAfter).localizedDescription
         }
         tabs[tab] = state
+        if !refusal.isEmpty { noteRefusal(refusal, retryAfter: state.retryAfter) }
         var line = "[\(bridge.label)] \(tab.rawValue): \(count) loaded\(state.exhausted ? ", end" : "")"
         if count == 0 && !state.message.isEmpty { line += "; tik.ninja's panel says: \(state.message)" }
-        if let error = state.error { line += "; \(error)" }
-        DebugLog.shared.add(.web, line, level: count == 0 && Self.looksLikeSiteError(state.message) ? .warning : .info)
+        if !refusal.isEmpty {
+            line += "; refused (\(refusal)), kept open for another try"
+        } else if let error = state.error {
+            line += "; \(error)"
+        }
+        DebugLog.shared.add(.web, line, level: refusal.isEmpty ? .info : .warning)
     }
 
     /// "— All videos loaded —" becomes "All videos loaded".
@@ -411,10 +635,12 @@ final class ProfileEngine: ObservableObject {
     // MARK: Posts
 
     func openItem(_ tab: ProfileTab, _ index: Int) async throws -> ItemDetail {
+        await freshen()
         let name = tab.rawValue
         let json = try await runner.run { [bridge] in
             try await bridge.call("return JSON.stringify(await window.__nv.openItem(t, i));", ["t": name, "i": index], timeout: 45)
         }
+        try raiseRefusal(json)
         let detail = try bridge.decode(ItemDetail.self, json)
         if !detail.error.isEmpty { throw EngineError.page(detail.error) }
         return detail
@@ -427,6 +653,7 @@ final class ProfileEngine: ObservableObject {
     }
 
     func requestAudio() async throws {
+        await freshen()
         let json = try await runner.run { [bridge] in
             try await bridge.call("return JSON.stringify(window.__nv.audio());")
         }
@@ -437,33 +664,41 @@ final class ProfileEngine: ObservableObject {
     // MARK: Comments
 
     func openComments() async throws -> CommentsSnapshot {
+        await freshen()
         let json = try await runner.run { [bridge] in
             try await bridge.call("return JSON.stringify(await window.__nv.comments());", timeout: 30)
         }
+        try raiseRefusal(json)
         let snap = try bridge.decode(CommentsSnapshot.self, json)
         if !snap.error.isEmpty { throw EngineError.page(snap.error) }
         return snap
     }
 
     func moreComments() async throws -> CommentsSnapshot {
+        await freshen()
         let json = try await runner.run { [bridge] in
             try await bridge.call("return JSON.stringify(await window.__nv.moreComments());", timeout: 30)
         }
+        try raiseRefusal(json)
         return try bridge.decode(CommentsSnapshot.self, json)
     }
 
     func replies(_ index: Int) async throws -> CommentItem {
+        await freshen()
         let json = try await runner.run { [bridge] in
             try await bridge.call("return JSON.stringify(await window.__nv.replies(i));", ["i": index], timeout: 30)
         }
+        try raiseRefusal(json)
         guard let comment = try bridge.decode(CommentItem?.self, json) else { throw EngineError.page("missing") }
         return comment
     }
 
     func moreReplies(_ index: Int) async throws -> CommentItem {
+        await freshen()
         let json = try await runner.run { [bridge] in
             try await bridge.call("return JSON.stringify(await window.__nv.moreReplies(i));", ["i": index], timeout: 30)
         }
+        try raiseRefusal(json)
         guard let comment = try bridge.decode(CommentItem?.self, json) else { throw EngineError.page("missing") }
         return comment
     }
@@ -531,6 +766,19 @@ extension ProfileEngine: PageBridgeDelegate {
     func bridgeDidReceive(_ event: [String: Any]) {
         guard let type = event["type"] as? String else { return }
         switch type {
+        case "ready":
+            // The page loading is the session's latest activity (a preloaded page's message arrives later).
+            if let ms = (event["at"] as? NSNumber)?.doubleValue, ms > 0 {
+                lastSessionUse = Date(timeIntervalSince1970: ms / 1000)
+            } else {
+                lastSessionUse = Date()
+            }
+        case "net":
+            guard let host = event["host"] as? String, NetLedger.isTikNinja(NetLedger.bareHost(host)),
+                  (event["path"] as? String ?? "").hasPrefix("/api") else { break }
+            let status = PageBridge.number(event["status"]) ?? 0
+            if (200..<300).contains(status) { lastSessionUse = Date() }
+            if status == 403 { sessionRefusedAt = Date() }
         case "status":
             let text = (event["text"] as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
             if phase == .loading { liveStatus = text }

@@ -191,6 +191,12 @@ extension URL {
 
 enum EngineError: LocalizedError {
     case timedOut, badReply, torn, page(String)
+    /// tik.ninja (Cloudflare in front of it) is refusing requests from this connection; it asked to wait this many seconds.
+    case limited(Int)
+    /// tik.ninja refused this page's session (HTTP 403).
+    case forbidden
+    /// tik.ninja rejected the request itself (HTTP 422).
+    case rejected
 
     var errorDescription: String? {
         switch self {
@@ -198,12 +204,24 @@ enum EngineError: LocalizedError {
         case .badReply: return "tik.ninja's page answered in an unexpected way. Check Settings > Debug log."
         case .torn: return "This profile was closed."
         case .page(let code): return EngineError.describe(code)
+        case .limited(let seconds): return "tik.ninja is limiting requests (HTTP 429). Try again in \(max(seconds, 10)) seconds."
+        case .forbidden: return "tik.ninja refused this page's session (HTTP 403). NinjaView is starting a new one; try again in a moment."
+        case .rejected: return "tik.ninja rejected this request (HTTP 422)."
         }
     }
 
     var code: String? {
         if case .page(let code) = self { return code }
         return nil
+    }
+
+    /// A refusal a page call reported (limited, forbidden or rejected), as an error.
+    static func refusal(_ kind: String, retryAfter: Int) -> EngineError {
+        switch kind {
+        case "limited": return .limited(retryAfter)
+        case "forbidden": return .forbidden
+        default: return .rejected
+        }
     }
 
     static func describe(_ code: String) -> String {
@@ -213,7 +231,8 @@ enum EngineError: LocalizedError {
         case "unavailable": return "Comments aren't available for this post."
         case "closed": return "The post closed before it finished loading."
         case "noaudio": return "This post has no separate audio to save."
-        default: return "tik.ninja reported “\(code)”."
+        case "limited", "forbidden", "rejected": return refusal(code, retryAfter: 0).errorDescription ?? code
+        default: return "tik.ninja reported \u{201C}\(code)\u{201D}."
         }
     }
 }

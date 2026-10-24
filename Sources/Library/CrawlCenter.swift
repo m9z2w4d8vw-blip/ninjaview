@@ -25,6 +25,8 @@ final class Crawl: ObservableObject, Identifiable {
     @Published fileprivate(set) var postsTotal = 0
     fileprivate var pauseRequested = false
     fileprivate var deleteWhenStopped = false
+    /// When this download started over on a fresh page, for the limit on restarts.
+    fileprivate var restarts: [Date] = []
 
     init(handle: String, mode: Mode) {
         self.handle = handle
@@ -214,19 +216,35 @@ final class CrawlCenter: ObservableObject {
             store.update(crawl.handle) { $0.analytics = lines }
         }
 
+        // Lists tik.ninja kept refusing: the download then stops short of complete, so it can be resumed.
+        var incomplete: [String] = []
         for tab in crawl.tabs {
             if shouldYield(crawl) {
                 stop(crawl, store)
                 return
             }
+            if engine.needsFreshPage {
+                await restart(crawl, store, engine)
+                return
+            }
             crawl.activity = "Reading \(tab.title.lowercased())"
-            let items = await pageThrough(tab, engine: engine, crawl: crawl, cap: crawl.postCap)
+            let page = await pageThrough(tab, engine: engine, crawl: crawl, cap: crawl.postCap)
+            if engine.needsFreshPage {
+                await restart(crawl, store, engine)
+                return
+            }
+            if !page.complete { incomplete.append(tab.title.lowercased()) }
+            let items = page.items
             let keys = StableKey.keys(for: items, tab: tab)
             store.setEntries(crawl.handle, tab, items: items, keys: keys)
             crawl.postsTotal += items.count
             for (item, key) in zip(items, keys) {
                 if shouldYield(crawl) {
                     stop(crawl, store)
+                    return
+                }
+                if engine.needsFreshPage {
+                    await restart(crawl, store, engine)
                     return
                 }
                 let alreadySaved = store.isComplete(crawl.handle, tab, key)
@@ -253,12 +271,41 @@ final class CrawlCenter: ObservableObject {
                     stop(crawl, store)
                     return
                 }
+                if engine.needsFreshPage {
+                    await restart(crawl, store, engine)
+                    return
+                }
                 crawl.activity = "Reading \(tab.title.lowercased())"
-                _ = await pageThrough(tab, engine: engine, crawl: crawl, cap: CrawlLimits.usersPerList)
-                store.saveUsers(engine.tabs[tab]?.users ?? [], tab: tab, handle: crawl.handle)
+                let page = await pageThrough(tab, engine: engine, crawl: crawl, cap: CrawlLimits.usersPerList)
+                if engine.needsFreshPage {
+                    await restart(crawl, store, engine)
+                    return
+                }
+                let users = engine.tabs[tab]?.users ?? []
+                // A list cut short by a refusal only replaces a saved one that's shorter.
+                if page.complete || users.count > store.loadUsers(crawl.handle, tab).count {
+                    store.saveUsers(users, tab: tab, handle: crawl.handle)
+                }
+                if !page.complete {
+                    incomplete.append(tab.title.lowercased())
+                    DebugLog.shared.warn(.crawl, "[\(engine.bridge.label)] tik.ninja refused the \(tab.rawValue) list of @\(crawl.handle) partway (\(users.count) loaded); the longer of it and the saved list is kept")
+                }
             }
         }
 
+        if !incomplete.isEmpty {
+            let reason = "tik.ninja refused the \(incomplete.joined(separator: " and ")) \(incomplete.count == 1 ? "list" : "lists") partway; resume to finish"
+            let size = ProfileStore.size(of: store.folder(crawl.handle))
+            crawl.activity = ""
+            crawl.state = .failed(reason)
+            store.update(crawl.handle, now: true) { profile in
+                profile.status = .failed
+                profile.note = reason
+                profile.bytes = size
+            }
+            DebugLog.shared.warn(.crawl, "Stopped the \(crawl.mode.rawValue) download of @\(crawl.handle) short of complete: \(reason)")
+            return
+        }
         store.finish(crawl.handle)
         crawl.activity = ""
         crawl.state = .finished
@@ -282,16 +329,33 @@ final class CrawlCenter: ObservableObject {
         }
     }
 
-    /// Opens a tab and keeps loading more until the end (or the cap).
-    private func pageThrough(_ tab: ProfileTab, engine: ProfileEngine, crawl: Crawl, cap: Int) async -> [PostItem] {
+    /// Opens a tab and keeps loading more until the end (or the cap). A list tik.ninja refuses is
+    /// retried after its Retry-After instead of being taken as finished.
+    private func pageThrough(_ tab: ProfileTab, engine: ProfileEngine, crawl: Crawl, cap: Int) async -> PageResult {
         await engine.load(tab)
         await settle(engine, tab)
-        if engine.tabs[tab]?.loaded != true {
+        if engine.tabs[tab]?.loaded != true && engine.tabs[tab]?.refusal == nil {
             await engine.load(tab)
             await settle(engine, tab)
         }
         var stalls = 0
-        while let state = engine.tabs[tab], state.loaded, !state.exhausted, stalls < 3 {
+        var refusals = 0
+        while !engine.needsFreshPage, let state = engine.tabs[tab] {
+            if let refusal = state.refusal {
+                // A 429 is waited out, up to three times in a row; anything else ends the list here.
+                guard refusal == "limited", refusals < 3 else { break }
+                refusals += 1
+                await waitOut(state.retryAfter, engine: engine, what: "the \(tab.rawValue) list")
+                if state.loaded {
+                    await engine.loadMore(tab)
+                } else {
+                    await engine.load(tab)
+                }
+                await settle(engine, tab)
+                continue
+            }
+            refusals = 0
+            guard state.loaded, !state.exhausted, stalls < 3 else { break }
             let count = state.items.count + state.users.count
             if count >= cap || shouldYield(crawl) { break }
             await engine.loadMore(tab)
@@ -299,7 +363,58 @@ final class CrawlCenter: ObservableObject {
             let after = (engine.tabs[tab]?.items.count ?? 0) + (engine.tabs[tab]?.users.count ?? 0)
             stalls = after > count ? 0 : stalls + 1
         }
-        return Array((engine.tabs[tab]?.items ?? []).prefix(cap))
+        let final = engine.tabs[tab]
+        return PageResult(items: Array((final?.items ?? []).prefix(cap)),
+                          complete: final?.refusal == nil && final?.loaded == true)
+    }
+
+    private struct PageResult {
+        let items: [PostItem]
+        /// False when tik.ninja refused the list partway and waiting didn't help.
+        let complete: Bool
+    }
+
+    /// tik.ninja refused this page's session, or it went long enough without an answer that it
+    /// would: start the download over on a fresh page, which skips everything already saved. A
+    /// fourth restart within 15 minutes stops it instead, so a site refusing every new session
+    /// can't keep it looping.
+    private func restart(_ crawl: Crawl, _ store: ProfileStore, _ engine: ProfileEngine) async {
+        let now = Date()
+        crawl.restarts = crawl.restarts.filter { now.timeIntervalSince($0) < 15 * 60 } + [now]
+        crawl.activity = ""
+        let why = engine.sessionRefusedAt != nil
+            ? "tik.ninja refused its session (HTTP 403)"
+            : "its session went \(PageBridge.ago(now.addingTimeInterval(-engine.sessionIdle))) without an answer"
+        guard crawl.restarts.count <= 3 else {
+            let reason = "tik.ninja kept refusing new sessions; try again later"
+            crawl.state = .failed(reason)
+            store.update(crawl.handle, now: true) { profile in
+                profile.status = .failed
+                profile.note = reason
+            }
+            DebugLog.shared.error(.crawl, "[\(engine.bridge.label)] Gave up the \(crawl.mode.rawValue) download of @\(crawl.handle): \(why), the fourth time in 15 minutes")
+            return
+        }
+        DebugLog.shared.warn(.crawl, "[\(engine.bridge.label)] \(why); restarting the \(crawl.mode.rawValue) download of @\(crawl.handle) on a fresh page (it skips what's saved)")
+        crawl.state = .queued
+        try? await Task.sleep(nanoseconds: 2_000_000_000)
+    }
+
+    /// Waits out tik.ninja's Retry-After: at least the 10 seconds it usually asks for, at most a minute.
+    private func waitOut(_ seconds: Int, engine: ProfileEngine, what: String) async {
+        let wait = min(60, max(10, seconds))
+        DebugLog.shared.warn(.crawl, "[\(engine.bridge.label)] tik.ninja refused \(what) (HTTP 429); waiting \(wait) s before trying again")
+        try? await Task.sleep(nanoseconds: UInt64(wait) * 1_000_000_000)
+    }
+
+    /// Opens a post, waiting out one refusal (429) rather than skipping the post.
+    private func openPatiently(_ engine: ProfileEngine, _ tab: ProfileTab, _ index: Int) async throws -> ItemDetail {
+        do {
+            return try await engine.openItem(tab, index)
+        } catch EngineError.limited(let seconds) {
+            await waitOut(seconds, engine: engine, what: "opening a post")
+            return try await engine.openItem(tab, index)
+        }
     }
 
     /// Waits out a tab load that's already in flight (the engine's own first load, say).
@@ -331,7 +446,7 @@ final class CrawlCenter: ObservableObject {
             post.thumbFile = await fetcher.save(thumb, into: folder, name: "cover")
         }
         do {
-            let detail = try await engine.openItem(tab, item.index)
+            let detail = try await openPatiently(engine, tab, item.index)
             post.detail = detail
             if detail.isVideo, let url = detail.videoURL {
                 post.videoFile = await fetcher.save(url, into: folder, name: "video")
@@ -369,35 +484,60 @@ final class CrawlCenter: ObservableObject {
     }
 
     /// Every comment the page will load (up to the cap), with reply threads opened one at a time.
-    /// A thread that won't open is almost always tik.ninja refusing requests, so this waits longer
-    /// and tries once more; after three refusals in a row it stops opening threads for this post
-    /// and counts the rest as missing, so the next archive update fills them in.
+    /// A refusal (429) is waited out for as long as tik.ninja's Retry-After asks; after three refused
+    /// threads in a row it stops opening threads for this post and counts the rest as missing, so the
+    /// next archive update fills them in. A refused session (403) stops it at once, so the download
+    /// can start over on a fresh page.
     private func collectComments(_ engine: ProfileEngine, threadLimit: Int) async -> SavedComments {
-        guard let first = try? await engine.openComments() else {
+        var firstSnap: CommentsSnapshot? = nil
+        for attempt in 0..<2 {
+            do {
+                firstSnap = try await engine.openComments()
+                break
+            } catch EngineError.limited(let seconds) where attempt == 0 {
+                await waitOut(seconds, engine: engine, what: "the comments")
+                await engine.closeComments()
+            } catch {
+                break
+            }
+        }
+        guard let first = firstSnap else {
             return SavedComments(comments: [], note: "", missingThreads: 0)
         }
         var snap = first
-        while snap.comments.count < CrawlLimits.commentsPerPost {
-            guard let next = try? await engine.moreComments() else { break }
-            let grew = next.comments.count > snap.comments.count
-            snap = next
-            if !grew { break }
+        var limitedRounds = 0
+        while snap.comments.count < CrawlLimits.commentsPerPost && !engine.needsFreshPage {
+            do {
+                let next = try await engine.moreComments()
+                let grew = next.comments.count > snap.comments.count
+                snap = next
+                if !grew { break }
+                limitedRounds = 0
+            } catch EngineError.limited(let seconds) {
+                limitedRounds += 1
+                if limitedRounds > 2 { break }
+                await waitOut(seconds, engine: engine, what: "more comments")
+            } catch {
+                break
+            }
         }
         var threads: [Int: CommentItem] = [:]
         var refusals = 0
         var missing = 0
         for comment in snap.comments.filter({ !$0.replyLabel.isEmpty }).prefix(threadLimit) {
-            if Task.isCancelled || refusals >= 3 {
+            if Task.isCancelled || refusals >= 3 || engine.needsFreshPage {
                 missing += 1
                 continue
             }
-            var thread = await openThread(engine, comment.index)
-            if thread == nil {
+            var thread: CommentItem? = nil
+            do {
+                thread = try await openThread(engine, comment.index)
+            } catch EngineError.limited(let seconds) {
                 refusals += 1
-                let wait = min(30.0, 5.0 * pow(2.0, Double(refusals - 1)))
-                DebugLog.shared.warn(.crawl, "[\(engine.bridge.label)] A reply thread didn't open (tik.ninja may be limiting requests); waiting \(Int(wait)) s")
-                try? await Task.sleep(nanoseconds: UInt64(wait * 1_000_000_000))
-                thread = await openThread(engine, comment.index)
+                await waitOut(seconds, engine: engine, what: "a reply thread")
+                thread = try? await openThread(engine, comment.index)
+            } catch {
+                thread = nil
             }
             guard var opened = thread else {
                 missing += 1
@@ -405,7 +545,7 @@ final class CrawlCenter: ObservableObject {
             }
             refusals = 0
             var rounds = 0
-            while opened.repliesMore && rounds < CrawlLimits.replyRounds {
+            while opened.repliesMore && rounds < CrawlLimits.replyRounds && !engine.needsFreshPage {
                 try? await Task.sleep(nanoseconds: CrawlLimits.replyPause)
                 guard let more = try? await engine.moreReplies(comment.index), more.replies.count > opened.replies.count else { break }
                 opened = more
@@ -424,15 +564,15 @@ final class CrawlCenter: ObservableObject {
         }
         await engine.closeComments()
         if missing > 0 {
-            DebugLog.shared.warn(.crawl, "\(missing) reply threads didn't load; the next archive update tries them again")
+            DebugLog.shared.warn(.crawl, "[\(engine.bridge.label)] \(missing) reply threads didn't load; the next archive update tries them again")
         }
         return SavedComments(comments: comments, note: ProfileEngine.tidy(base.note), missingThreads: missing)
     }
 
-    /// One reply thread, or nil when it didn't open (the site didn't send the replies).
-    private func openThread(_ engine: ProfileEngine, _ index: Int) async -> CommentItem? {
-        guard let thread = try? await engine.replies(index), !thread.replies.isEmpty else { return nil }
-        return thread
+    /// One reply thread, or nil when it opened empty. A refusal arrives as an error (EngineError.limited and the like).
+    private func openThread(_ engine: ProfileEngine, _ index: Int) async throws -> CommentItem? {
+        let thread = try await engine.replies(index)
+        return thread.replies.isEmpty ? nil : thread
     }
 
     /// An archived post whose reply threads didn't all load: open it again just for its comments,
@@ -440,7 +580,7 @@ final class CrawlCenter: ObservableObject {
     private func refreshReplies(_ stored: StoredPost, item: PostItem, tab: ProfileTab, crawl: Crawl, engine: ProfileEngine) async {
         let started = Date()
         do {
-            let detail = try await engine.openItem(tab, item.index)
+            let detail = try await openPatiently(engine, tab, item.index)
             var post = stored
             guard detail.hasComments else {
                 post.repliesMissing = 0

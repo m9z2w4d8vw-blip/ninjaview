@@ -637,21 +637,81 @@ html.nv-noads iframe[src*="googleads"] { display: none !important; }
     return 'ok';
   }
   function looksLikeError(s) {
-    return /not found|no user|doesn.?t exist|does not exist|private|error|failed|unable|couldn.?t|could not|invalid|limit|try again|unavailable|blocked|banned|suspended/i.test(s);
+    return /not found|no user|doesn.?t exist|does not exist|private|error|failed|unable|couldn.?t|could not|invalid|limit|try again|unavailable|blocked|banned|suspended|forbidden|too many|slow down|\u26a0/i.test(s);
+  }
+
+  // ---- refusals --------------------------------------------------------------------
+  // What tik.ninja's API refused since request number `seq0`: limited (HTTP 429, with the seconds
+  // its Retry-After asked for), forbidden (403: this page's session was refused) or rejected (422).
+  // Read from the document-start request log, so an action stops waiting the moment it's refused.
+  function refusedSince(seq0) {
+    var found = null;
+    (window.__nvNetLog || []).forEach(function (n) {
+      if (n.seq <= seq0 || !/(^|\.)tik\.ninja\/api/i.test(n.url || '')) return;
+      if (n.status === 429) {
+        var m = /retry-after (\d+)/i.exec(n.note || '');
+        var wait = m ? Number(m[1]) : 0;
+        if (!found || found.kind !== 'limited') found = { kind: 'limited', retryAfter: wait };
+        else if (wait > found.retryAfter) found.retryAfter = wait;
+      } else if (n.status === 403 && (!found || found.kind === 'rejected')) {
+        found = { kind: 'forbidden', retryAfter: 0 };
+      } else if (n.status === 422 && !found) {
+        found = { kind: 'rejected', retryAfter: 0 };
+      }
+    });
+    return found;
+  }
+  function answeredSince(seq0) {
+    return (window.__nvNetLog || []).some(function (n) { return n.seq > seq0 && /(^|\.)tik\.ninja\/api/i.test(n.url || ''); });
+  }
+  // Adds the refusal, if there was one, to a reply for the app to act on.
+  function withRefusal(obj, seq0) {
+    var r = refusedSince(seq0);
+    if (obj) { obj.refused = r ? r.kind : ''; obj.retryAfter = r ? r.retryAfter : 0; }
+    return obj;
+  }
+  // tik.ninja marks an error in its status line with a leading warning sign and an "err" class.
+  function statusError(el) {
+    var s = raw(el);
+    if (!s) return false;
+    if (/^\u26a0/.test(s) || looksLikeError(s)) return true;
+    return /(^|\s)err(or)?(\s|$)/i.test(String((el && el.className) || '')) && !/looking up|loading|searching|please wait/i.test(s);
+  }
+  function classify(text, seq0) {
+    var r = refusedSince(seq0);
+    if (r) return r;
+    var s = String(text || '');
+    if (/too many|slow down|429|rate.?limit/i.test(s)) return { kind: 'limited', retryAfter: 0 };
+    if (/forbidden|403|operation failed|operation-specific/i.test(s)) return { kind: 'forbidden', retryAfter: 0 };
+    if (/422/.test(s)) return { kind: 'rejected', retryAfter: 0 };
+    if (/private/i.test(s)) return { kind: 'private', retryAfter: 0 };
+    if (/not found|no user|doesn.?t exist|does not exist|couldn.?t find|no such/i.test(s)) return { kind: 'notfound', retryAfter: 0 };
+    return { kind: 'other', retryAfter: 0 };
   }
   async function lookup(query) {
     var trace = { t0: Date.now(), steps: [] };
     var seq0 = netSeq();
     note(trace, 'lookup started on ' + location.href + ', ' + Math.round(performance.now()) + ' ms after the page began loading');
     var started = search(query, trace);
-    if (started !== 'ok') return { profile: null, item: null, status: '', error: started, trace: traceLines(trace, seq0) };
+    if (started !== 'ok') {
+      return { profile: null, item: null, status: '', error: started, kind: '', retryAfter: 0, trace: traceLines(trace, seq0) };
+    }
     var t0 = Date.now();
-    var seen = null;
+    var seen = null, refusedAt = 0;
     var outcome = await until(function () {
-      var s = raw(byId('search-status'));
-      if (s !== seen) { seen = s; note(trace, 'status line: ' + (s ? '\u201c' + s + '\u201d' : '(empty)')); }
+      var el = byId('search-status');
+      var s = raw(el);
+      if (s !== seen) {
+        seen = s;
+        note(trace, 'status line: ' + (s ? '\u201c' + s + '\u201d' : '(empty)') + (el && el.className ? ' [class ' + el.className + ']' : ''));
+      }
       if (readProfile() || (modalOpen() && mediaSrc())) return 'found';
-      if (s && looksLikeError(s) && Date.now() - t0 > 400) return 'error';
+      if (s && statusError(el) && Date.now() - t0 > 400) return 'error';
+      // The lookup's request was refused: give the status line a moment to say so, then stop waiting.
+      if (refusedSince(seq0)) {
+        if (!refusedAt) refusedAt = Date.now();
+        if (Date.now() - refusedAt > 600) return 'error';
+      }
       return null;
     }, 30000, 120);
     if (outcome === 'found') {
@@ -662,11 +722,18 @@ html.nv-noads iframe[src*="googleads"] { display: none !important; }
         await until(function () { return modalOpen() && mediaSrc() ? true : null; }, 1500, 100);
       }
       var item = modalOpen() ? await readItem() : null;
-      return { profile: readProfile(), item: item, status: '', error: '', trace: traceLines(trace, seq0) };
+      return { profile: readProfile(), item: item, status: '', error: '', kind: '', retryAfter: 0, trace: traceLines(trace, seq0) };
     }
-    note(trace, outcome === 'error' ? 'stopped: the status line shows an error' : 'stopped: no profile and no error after 30 s');
-    return { profile: null, item: null, status: raw(byId('search-status')), error: outcome === 'error' ? 'status' : 'timeout',
-             trace: traceLines(trace, seq0) };
+    var text = raw(byId('search-status'));
+    var c = outcome === 'error' ? classify(text, seq0) : (refusedSince(seq0) || { kind: '', retryAfter: 0 });
+    var why = { 'limited': 'tik.ninja is limiting requests', 'forbidden': 'tik.ninja refused this page\u2019s session',
+                'rejected': 'tik.ninja rejected the request', 'notfound': 'tik.ninja can\u2019t find the account',
+                'private': 'tik.ninja says the account is private' }[c.kind] || 'the status line shows an error';
+    note(trace, outcome === 'error'
+      ? 'stopped: ' + why + (c.retryAfter ? ' (Retry-After ' + c.retryAfter + ' s)' : '')
+      : 'stopped: no profile and no error after 30 s');
+    return { profile: null, item: null, status: text, error: outcome === 'error' ? 'status' : 'timeout',
+             kind: c.kind, retryAfter: c.retryAfter, trace: traceLines(trace, seq0) };
   }
 
   // ---- tabs --------------------------------------------------------------------
@@ -728,21 +795,39 @@ html.nv-noads iframe[src*="googleads"] { display: none !important; }
     if (!s.items.length && !s.users.length && s.rendered && !s.loading) s.message = leftover(p);
     return s;
   }
-  async function openTab(name) {
+  async function openTab(name, again) {
+    var seq0 = netSeq();
     var button = byId('tab-btn-' + name);
-    if (!button) return tabState(name);
-    if (!button.classList.contains('active')) button.click();
-    await until(function () { var p = panel(name); return p && shown(p) && p.firstElementChild ? true : null; }, 8000);
+    if (!button) return withRefusal(tabState(name), seq0);
+    if (!button.classList.contains('active') || again) button.click();
+    if (again) {
+      // A list that failed may only ask again after another tab has been shown.
+      if (!(await until(function () { return netSeq() > seq0 ? true : null; }, 1500, 100))) {
+        var other = $$('.tab-btn').filter(function (b) { return b !== button && shown(b); })[0];
+        if (other) { other.click(); await sleep(200); button.click(); }
+      }
+      if (netSeq() > seq0) {
+        await until(function () { return answeredSince(seq0) ? true : null; }, 20000, 100);
+        await sleep(150);
+      }
+    }
     await until(function () {
+      if (refusedSince(seq0)) return true;
+      var p = panel(name);
+      return p && shown(p) && p.firstElementChild ? true : null;
+    }, 8000);
+    await until(function () {
+      if (refusedSince(seq0)) return true;
       var s = tabState(name);
       return (!s.loading && (s.items.length || s.users.length || s.ended || s.hasMore || s.message)) ? true : null;
     }, 20000, 120);
     await sleep(120);
-    return tabState(name);
+    return withRefusal(tabState(name), seq0);
   }
   async function loadMore(name) {
+    var seq0 = netSeq();
     var p = panel(name);
-    if (!p) return tabState(name);
+    if (!p) return withRefusal(tabState(name), seq0);
     // The page may be showing another tab (stories preload, a background download).
     if (!shown(p)) { await openTab(name); p = panel(name); }
     var before = tabState(name);
@@ -752,12 +837,13 @@ html.nv-noads iframe[src*="googleads"] { display: none !important; }
     else { window.scrollTo(0, document.documentElement.scrollHeight); window.dispatchEvent(new Event('scroll')); }
     var t0 = Date.now();
     await until(function () {
+      if (refusedSince(seq0)) return true;
       var s = tabState(name);
       var n = s.items.length + s.users.length;
       return (n > count || s.ended || (!s.loading && Date.now() - t0 > 1500)) ? true : null;
     }, 20000, 120);
     await sleep(80);
-    return tabState(name);
+    return withRefusal(tabState(name), seq0);
   }
 
   // ---- posts (the site's modal) ------------------------------------------------
@@ -847,9 +933,12 @@ html.nv-noads iframe[src*="googleads"] { display: none !important; }
     return 'ok';
   }
   async function openItem(name, index) {
+    var seq0 = netSeq();
     var p = panel(name);
     if (!p || !shown(p)) { await openTab(name); p = panel(name); }
     var cards = p ? cardsIn(p) : [];
+    var early = refusedSince(seq0);
+    if (early && !cards.length) return withRefusal(emptyItem(early.kind), seq0);
     if (index < 0 || index >= cards.length) return emptyItem('missing');
     var prevSrc = mediaSrc(), prevCaption = captionText();
     await closeItem();
@@ -857,7 +946,11 @@ html.nv-noads iframe[src*="googleads"] { display: none !important; }
     try { card.scrollIntoView({ block: 'center' }); } catch (e) {}
     // Click a child so the event bubbles through whichever element the site listens on.
     ($('.vcard-overlay', card) || $('img', card) || card).click();
-    var opened = await until(function () { return modalOpen() && mediaSrc() ? true : null; }, 15000, 80);
+    var opened = await until(function () { return (modalOpen() && mediaSrc()) || refusedSince(seq0) ? true : null; }, 15000, 80);
+    if (!(modalOpen() && mediaSrc())) {
+      var r = refusedSince(seq0);
+      if (r) return withRefusal(emptyItem(r.kind), seq0);
+    }
     if (!opened) return modalOpen() ? await readItem() : emptyItem('timeout');
     if (mediaSrc() === prevSrc && captionText() === prevCaption) {
       await until(function () { return (mediaSrc() !== prevSrc || captionText() !== prevCaption) ? true : null; }, 3000, 80);
@@ -935,21 +1028,27 @@ html.nv-noads iframe[src*="googleads"] { display: none !important; }
     return list ? list.childElementCount + '|' + raw(list.firstElementChild) : '';
   }
   async function openComments() {
+    var seq0 = netSeq();
     var toggle = byId('modal-comments-toggle');
     if (!modalOpen() || !toggle) return commentsState('unavailable');
     var stale = listSignature();
     if (!commentsOpen()) toggle.click();
     var t0 = Date.now();
     await until(function () {
+      if (refusedSince(seq0)) return true;
       if (!commentsOpen()) return null;
       if (stale && listSignature() === stale && Date.now() - t0 < 1500) return null;
       var s = commentsState('');
       return (s.comments.length || (s.note && !/loading/i.test(s.note))) ? true : null;
     }, 20000, 120);
     await sleep(100);
-    return commentsState('');
+    var state = commentsState('');
+    if (!state.comments.length) withRefusal(state, seq0);
+    if (state.refused) state.error = state.refused;
+    return state;
   }
   async function moreComments() {
+    var seq0 = netSeq();
     var n = commentsState('').comments.length;
     var body = byId('modal-comments-body');
     var more = moreButton(body);
@@ -957,13 +1056,17 @@ html.nv-noads iframe[src*="googleads"] { display: none !important; }
     else if (body) { body.scrollTop = body.scrollHeight; body.dispatchEvent(new Event('scroll')); }
     var t0 = Date.now();
     await until(function () {
+      if (refusedSince(seq0)) return true;
       var s = commentsState('');
       return (s.comments.length > n || (Date.now() - t0 > 2500 && !/loading/i.test(s.note))) ? true : null;
     }, 15000, 120);
-    return commentsState('');
+    var state = commentsState('');
+    if (state.comments.length <= n) withRefusal(state, seq0);
+    return state;
   }
   function topComment(i) { var list = commentList(); return list ? ($$(':scope > .comment-item', list)[i] || null) : null; }
   async function openReplies(i) {
+    var seq0 = netSeq();
     var el = topComment(i);
     if (!el) return null;
     var body = $(':scope > .comment-body', el);
@@ -973,11 +1076,14 @@ html.nv-noads iframe[src*="googleads"] { display: none !important; }
       return th && th.style.display !== 'none' && $(':scope > .comment-item', th) ? true : null;
     };
     if (!isOpen() && button && !button.disabled) button.click();
-    await until(isOpen, 15000, 100);
+    await until(function () { return isOpen() || (refusedSince(seq0) ? true : null); }, 15000, 100);
     await sleep(60);
-    return commentFrom(topComment(i) || el, i);
+    var c = commentFrom(topComment(i) || el, i);
+    if (!isOpen()) withRefusal(c, seq0);
+    return c;
   }
   async function moreReplies(i) {
+    var seq0 = netSeq();
     var el = topComment(i);
     if (!el) return null;
     var body = $(':scope > .comment-body', el);
@@ -990,11 +1096,14 @@ html.nv-noads iframe[src*="googleads"] { display: none !important; }
     if (more) {
       more.click();
       await until(function () {
+        if (refusedSince(seq0)) return true;
         var th = body && $(':scope > .reply-thread', body);
         return th && $$(':scope > .comment-item', th).length > before ? true : null;
       }, 15000, 100);
     }
-    return commentFrom(topComment(i) || el, i);
+    var c = commentFrom(topComment(i) || el, i);
+    if (c.replies.length <= before) withRefusal(c, seq0);
+    return c;
   }
   async function closeComments() {
     if (!commentsOpen()) return 'ok';
@@ -1096,7 +1205,7 @@ html.nv-noads iframe[src*="googleads"] { display: none !important; }
     var visible = '';
     try { visible = String((document.body && document.body.innerText) || '').replace(/\s+/g, ' ').trim(); } catch (e) { visible = ''; }
     return {
-      engine: 3,
+      engine: 4,
       url: location.href,
       title: document.title,
       readyState: document.readyState,
@@ -1136,12 +1245,12 @@ html.nv-noads iframe[src*="googleads"] { display: none !important; }
     if (readySent) return;
     if (!byId('search-input') || !byId('search-btn')) return;
     readySent = true;
-    post('ready', { url: location.href });
+    post('ready', { url: location.href, at: Date.now() });
     scan();
   }
 
   window.__nv = {
-    version: 3,
+    version: 4,
     search: search,
     diagnose: diagnose,
     lookup: lookup,
