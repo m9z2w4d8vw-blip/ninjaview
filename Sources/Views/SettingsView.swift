@@ -142,11 +142,12 @@ struct SettingsView: View {
                             downloads.show(.failure, "Couldn't create the log file.")
                         }
                     }
+                    Toggle("Verbose network log", isOn: $settings.verboseNetLog)
                     Button("Clear debug log", role: .destructive) { DebugLog.shared.clear() }
                 } header: {
                     Text("Diagnostics")
                 } footer: {
-                    Text("The .txt report covers this launch and the four before it: page loads and engine calls with their timing, every request tik.ninja's page makes, script errors and console warnings, downloads, playback and storage, plus a snapshot of the app and phone. It stays on this iPhone unless you share it.")
+                    Text("The .txt report covers this launch and the four before it: page loads and engine calls with their timing, every request tik.ninja's page makes (with what was sent and what came back when one is refused), how many requests each hidden page and the app send to tik.ninja, script errors and console warnings, downloads, playback and storage, plus a snapshot of the app, phone and connection. Verbose network log also records headers and the start of the answer for requests that worked, from the next profile you open. The report stays on this iPhone unless you share it.")
                 }
 
                 Section {

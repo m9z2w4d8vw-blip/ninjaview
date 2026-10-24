@@ -228,6 +228,9 @@ final class WatchCenter: ObservableObject {
 
     var isResting: Bool { (restingUntil ?? .distantPast) > Date() }
 
+    /// Refused rounds in a row (each one doubles the rest), for reports.
+    var refusals: Int { refusalStreak }
+
     /// What the "Keeping awake" row in Settings shows.
     var keepAwakeStatus: String {
         if mode != .instant { return "Off in Standard mode" }
@@ -506,7 +509,7 @@ final class WatchCenter: ObservableObject {
 
     private func readTikTok(_ handle: String, kinds: [Activity], deadline: Date) async -> Reading {
         var reading = Reading()
-        let engine = ProfileEngine(route: Route(query: handle, handle: handle), headless: true)
+        let engine = ProfileEngine(route: Route(query: handle, handle: handle), headless: true, purpose: "watch check")
         engine.start()
         guard await waitUntilReady(engine, until: deadline), let header = engine.header else {
             let reason = Self.failureText(engine.phase)

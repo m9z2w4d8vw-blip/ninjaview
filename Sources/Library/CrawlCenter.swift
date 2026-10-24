@@ -58,6 +58,9 @@ final class CrawlCenter: ObservableObject {
 
     func find(_ handle: String, _ mode: Crawl.Mode) -> Crawl? { crawls[Crawl.id(handle, mode)] }
 
+    /// The download running right now, for reports.
+    var current: Crawl? { running }
+
     /// Download a profile for this session (it's erased when the app closes).
     func prefetch(_ handle: String) {
         guard AppSettings.shared.prefetch else { return }
@@ -176,10 +179,11 @@ final class CrawlCenter: ObservableObject {
         crawl.postsTotal = 0
         crawl.activity = "Looking up @\(crawl.handle)"
         store.begin(crawl.handle)
-        DebugLog.shared.add(.crawl, "Started \(crawl.mode.rawValue) download of @\(crawl.handle)")
 
-        let engine = ProfileEngine(route: Route(query: crawl.handle, handle: crawl.handle), headless: true)
+        let engine = ProfileEngine(route: Route(query: crawl.handle, handle: crawl.handle), headless: true,
+                                   purpose: crawl.mode == .archive ? "archive" : "session copy")
         defer { engine.teardown() }
+        DebugLog.shared.add(.crawl, "Started \(crawl.mode.rawValue) download of @\(crawl.handle) on hidden page \(engine.bridge.tag)")
         engine.start()
         while engine.phase == .loading {
             if shouldYield(crawl) {
@@ -263,6 +267,9 @@ final class CrawlCenter: ObservableObject {
 
     private func stop(_ crawl: Crawl, _ store: ProfileStore) {
         crawl.activity = ""
+        DebugLog.shared.add(.crawl, crawl.pauseRequested
+            ? "Paused the \(crawl.mode.rawValue) download of @\(crawl.handle) after \(crawl.postsDone) of \(crawl.postsTotal) posts"
+            : "The \(crawl.mode.rawValue) download of @\(crawl.handle) stepped aside for another one after \(crawl.postsDone) of \(crawl.postsTotal) posts")
         if crawl.pauseRequested {
             crawl.state = .paused
             let size = ProfileStore.size(of: store.folder(crawl.handle))
@@ -388,7 +395,7 @@ final class CrawlCenter: ObservableObject {
             if thread == nil {
                 refusals += 1
                 let wait = min(30.0, 5.0 * pow(2.0, Double(refusals - 1)))
-                DebugLog.shared.warn(.crawl, "A reply thread didn't open (tik.ninja may be limiting requests); waiting \(Int(wait)) s")
+                DebugLog.shared.warn(.crawl, "[\(engine.bridge.label)] A reply thread didn't open (tik.ninja may be limiting requests); waiting \(Int(wait)) s")
                 try? await Task.sleep(nanoseconds: UInt64(wait * 1_000_000_000))
                 thread = await openThread(engine, comment.index)
             }
@@ -499,6 +506,7 @@ final class MediaFetcher {
 
     /// Saves `url` into `folder` as `name.<ext>`; returns the file name, or nil if it failed.
     func save(_ url: URL, into folder: URL, name: String) async -> String? {
+        var began = Date()
         do {
             try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
             var request = URLRequest(url: url)
@@ -509,8 +517,22 @@ final class MediaFetcher {
                     request.setValue(cookie, forHTTPHeaderField: "Cookie")
                 }
             }
+            began = Date()
             let (temp, response) = try await session.download(for: request)
-            if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
+            let http = response as? HTTPURLResponse
+            var problem: String? = nil
+            if let http, !(200..<300).contains(http.statusCode) {
+                var line = "Couldn't save \(name) from \(url.host ?? "a file"): it answered \(HTTPDebug.describe(http))"
+                if HTTPDebug.isTextual(http) {
+                    let body = HTTPDebug.snippet(file: temp, limit: 400)
+                    if !body.isEmpty { line += "\n  body: " + body }
+                }
+                problem = line
+            }
+            NetLedger.shared.record(source: "app media saves", kind: "native", method: "GET", url: url, status: http?.statusCode,
+                                    ms: PageBridge.ms(since: began), retryAfter: HTTPDebug.retryAfter(response), detail: problem)
+            if let problem {
+                DebugLog.shared.warn(.crawl, problem)
                 try? FileManager.default.removeItem(at: temp)
                 return nil
             }
@@ -522,6 +544,10 @@ final class MediaFetcher {
             try FileManager.default.moveItem(at: temp, to: destination)
             return fileName
         } catch {
+            if error is URLError {
+                NetLedger.shared.record(source: "app media saves", kind: "native", method: "GET", url: url, status: 0,
+                                        ms: PageBridge.ms(since: began))
+            }
             DebugLog.shared.warn(.crawl, "Couldn't save \(name) from \(url.host ?? "a file"): \(error.localizedDescription)")
             return nil
         }

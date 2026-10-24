@@ -59,6 +59,8 @@ final class ClipPlayer: ObservableObject {
         duration = 0
         loadStarted = Date()
         DebugLog.shared.add(.player, "Loading \(url.isFileURL ? "saved file \(url.lastPathComponent)" : "video from \(url.host ?? "?")")")
+        // Counted toward tik.ninja's traffic when it serves the video itself (the player's answers aren't visible).
+        NetLedger.shared.record(source: "app video player", kind: "native", method: "GET", url: url, status: nil, ms: nil)
         // Same user agent as the page, so the CDN sees an ordinary browser.
         var headers = ["User-Agent": WebFactory.userAgent]
         if let referer = LinkRules.referer(for: url) { headers["Referer"] = referer }

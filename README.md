@@ -105,7 +105,22 @@ If tik.ninja shows a verification check, the profile screen says so, and **Show 
 
 ## When tik.ninja changes
 
-The selectors live in `Sources/Engine/WebAssets.swift` (`engineJS`) and match tik.ninja's markup as of October 2026. **Settings > Diagnostics > Export debug log (.txt)** writes a report you can save to Files or send: a snapshot of the app and phone, then the log of this launch and the four before it. The log covers page loads and every engine call with its timing, each request tik.ninja's page makes (status, time, size), script errors and console warnings, downloads, playback, storage and app lifecycle. **Debug log** shows the same in the app, filterable by area and by warnings and errors.
+The selectors live in `Sources/Engine/WebAssets.swift` (`engineJS`) and match tik.ninja's markup as of October 2026. **Settings > Diagnostics > Export debug log (.txt)** writes a report you can save to Files or send: a snapshot of the app, phone and connection, a summary of tik.ninja traffic (this launch, the last minute and five minutes, and minute by minute for the last hour), the latest lookup failure in full, then the log of this launch and the four before it. The log covers page loads and every engine call with its timing, each request tik.ninja's page makes (status, time, size, rate-limit headers), script errors and console warnings, downloads, playback, storage and app lifecycle. **Debug log** shows the same in the app, filterable by area and by warnings and errors, with a live count of tik.ninja traffic at the top.
+
+### Debugging a refused lookup (HTTP 429)
+
+"Server error — please try again. (HTTP 429)" is tik.ninja's own message: its server refused the search because too many requests reached it recently. NinjaView's hidden pages (the profile on screen, offline copies, archives and notification checks) and the app's own requests for thumbnails, saved media and video all share one connection, so they count against the same limit.
+
+When a profile can't load, the error screen has **Debug details** under its buttons. The report it shows has:
+
+- the lookup step by step: typing the handle, the click, each change of tik.ninja's status line, and every request the page made, with when it was sent, its status and how long it took;
+- the page right after: its status line and markup, the search box, any verification elements, cookies and storage by name, its latest requests and any still waiting;
+- tik.ninja traffic from the whole app in the last minute and the last five, by source (each hidden page, the app's images, saved media and so on), by endpoint and by status;
+- what was running (offline copies, archives, notification checks), the connection (Wi-Fi or cellular, a VPN), and a short reading of what the evidence points to.
+
+Copy it, or export the full log from the same screen.
+
+In the debug log, lines from a hidden page start with its name, like `[P3 screen @name]`, `[P5 session copy @name]` or `[P7 watch check @name]`. The **traffic** area counts every request that reaches tik.ninja, writes one line a minute while there's traffic, and writes a full report the moment tik.ninja refuses something: the refused request with the headers sent and received and the start of the answer, Retry-After if tik.ninja sent it, the requests in the 10 seconds, minute and five minutes before it, and what was running. **Settings > Diagnostics > Verbose network log** adds headers and the start of the answer to requests that worked too, from the next profile you open.
 
 ## Project layout
 
@@ -120,6 +135,7 @@ Sources/Engine                hidden pages: factory, dock, bridge, per-profile e
 Sources/Library               offline copies and archives: storage, background downloader
 Sources/Media                 saving to Photos, image loading, avatars, video player
 Sources/Model                 data types and input parsing
+Sources/Support               debug log, request tally, connection status, exported report
 Sources/Views                 SwiftUI screens
 ```
 

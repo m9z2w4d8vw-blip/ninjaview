@@ -54,10 +54,23 @@ final class ImagePipeline {
                 request.setValue(cookie, forHTTPHeaderField: "Cookie")
             }
         }
+        let began = Date()
         do {
             let (data, response) = try await session.data(for: request)
-            if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
-                DebugLog.shared.warn(.image, "Image answered \(http.statusCode) from \(url.host ?? "?")")
+            let http = response as? HTTPURLResponse
+            var problem: String? = nil
+            if let http, !(200..<300).contains(http.statusCode) {
+                var line = "Image answered \(http.statusCode) from \(url.host ?? "?")"
+                if LinkRules.isTikNinja(url) {
+                    line = "Image \(url.host ?? "?")\(url.path) answered \(HTTPDebug.describe(http))"
+                    if HTTPDebug.isTextual(http) { line += "\n  body: " + HTTPDebug.snippet(data, limit: 400) }
+                }
+                problem = line
+            }
+            NetLedger.shared.record(source: "app images", kind: "native", method: "GET", url: url, status: http?.statusCode,
+                                    ms: PageBridge.ms(since: began), retryAfter: HTTPDebug.retryAfter(response), detail: problem)
+            if let problem {
+                DebugLog.shared.warn(.image, problem)
                 return nil
             }
             guard let image = Self.downsample(data, maxPixel: maxPixel) else {
@@ -69,6 +82,8 @@ final class ImagePipeline {
         } catch {
             // Cells scrolling away cancel their loads; those aren't failures.
             if !(error is CancellationError) && (error as? URLError)?.code != .cancelled {
+                NetLedger.shared.record(source: "app images", kind: "native", method: "GET", url: url, status: 0,
+                                        ms: PageBridge.ms(since: began))
                 DebugLog.shared.warn(.image, "Image from \(url.host ?? "?") failed: \(error.localizedDescription)")
             }
             return nil

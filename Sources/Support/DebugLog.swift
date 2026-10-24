@@ -2,8 +2,9 @@ import Foundation
 import UIKit
 
 /// Everything worth knowing when something breaks: page loads and every call into the
-/// engine script with its timing, each request tik.ninja's page makes, script errors and
-/// console warnings, downloads, playback, storage and app lifecycle.
+/// engine script with its timing, each request tik.ninja's page makes, how many requests every
+/// hidden page and the app send to tik.ninja (the traffic area), script errors and console
+/// warnings, downloads, playback, storage and app lifecycle.
 ///
 /// Entries stay in memory for the in-app viewer and are appended to a file per launch in
 /// Caches/Logs (the last five launches are kept), so a crash or force-quit doesn't lose them.
@@ -22,7 +23,7 @@ final class DebugLog: ObservableObject {
     }
 
     enum Category: String, CaseIterable {
-        case app, nav, web, js, net, crawl, download, player, image, store, watch
+        case app, nav, web, js, net, traffic, crawl, download, player, image, store, watch
     }
 
     struct Entry: Identifiable {
@@ -44,7 +45,7 @@ final class DebugLog: ObservableObject {
 
     private var pending: [Entry] = []
     private var flushScheduled = false
-    private let memoryLimit = 5000
+    private let memoryLimit = 8000
     private var fileHandle: FileHandle?
     private let lineFormatter = DateFormatter()
 
@@ -93,10 +94,13 @@ final class DebugLog: ObservableObject {
         }
     }
 
-    /// One line of the .txt: time, level, area, message.
+    /// One line of the .txt: time, level, area, message. A message's later lines (failure and
+    /// traffic reports) are indented to line up under its first.
     func line(for entry: Entry) -> String {
         let area = entry.category.rawValue.padding(toLength: 9, withPad: " ", startingAt: 0)
-        return "\(lineFormatter.string(from: entry.date))  \(entry.level.tag)  \(area)\(entry.message)"
+        let prefix = "\(lineFormatter.string(from: entry.date))  \(entry.level.tag)  \(area)"
+        let indent = "\n" + String(repeating: " ", count: prefix.count)
+        return prefix + entry.message.replacingOccurrences(of: "\n", with: indent)
     }
 
     /// This launch's log file, plus the earlier launches' when asked, oldest first.

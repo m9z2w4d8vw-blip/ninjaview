@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 struct DebugLogView: View {
     @EnvironmentObject private var log: DebugLog
@@ -17,34 +18,30 @@ struct DebugLogView: View {
     }
 
     var body: some View {
-        List(rows) { entry in
-            VStack(alignment: .leading, spacing: 3) {
-                HStack(spacing: 8) {
-                    Text(entry.date.formatted(date: .omitted, time: .standard))
-                    Text(entry.category.rawValue)
-                    if entry.level != .info {
-                        Text(entry.level.rawValue)
-                            .foregroundStyle(entry.level == .error ? Color.red : Color.orange)
-                    }
-                }
-                .font(.mono(.caption2))
-                .foregroundStyle(Color.nvMuted)
-                Text(entry.message)
-                    .font(.mono(.caption))
-                    .foregroundStyle(entry.level == .error ? Color.red : Color.nvInk)
-                    .textSelection(.enabled)
+        List {
+            Section {
+                TrafficSummary()
+                    .listRowBackground(Color.nvPaper)
             }
-            .listRowBackground(Color.nvPaper)
+            Section {
+                ForEach(rows) { entry in
+                    EntryRow(entry: entry)
+                        .listRowBackground(Color.nvPaper)
+                }
+                if rows.isEmpty {
+                    Text(log.entries.isEmpty ? "Nothing logged yet" : "No matching entries")
+                        .font(.footnote)
+                        .foregroundStyle(Color.nvMuted)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 24)
+                        .listRowBackground(Color.nvPaper)
+                }
+            }
         }
         .listStyle(.plain)
         .scrollContentBackground(.hidden)
         .background(Color.nvPaper)
         .searchable(text: $filter, prompt: "Filter")
-        .overlay {
-            if rows.isEmpty {
-                ContentUnavailableView(log.entries.isEmpty ? "Nothing logged yet" : "No matching entries", systemImage: "text.alignleft")
-            }
-        }
         .navigationTitle("Debug log")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
@@ -57,6 +54,16 @@ struct DebugLogView: View {
                         }
                     }
                     Toggle("Warnings and errors only", isOn: $problemsOnly)
+                    Button {
+                        if let report = Diagnostics.lastFailureReport {
+                            UIPasteboard.general.string = report
+                            downloads.show(.success, "Failure report copied")
+                        } else {
+                            downloads.show(.failure, "No lookup has failed since NinjaView opened.")
+                        }
+                    } label: {
+                        Label("Copy latest failure report", systemImage: "doc.on.doc")
+                    }
                 } label: {
                     Image(systemName: "line.3.horizontal.decrease.circle")
                 }
@@ -72,6 +79,48 @@ struct DebugLogView: View {
                 }
                 .accessibilityLabel("Export as .txt")
             }
+        }
+    }
+}
+
+private struct EntryRow: View {
+    let entry: DebugLog.Entry
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            HStack(spacing: 8) {
+                Text(entry.date.formatted(date: .omitted, time: .standard))
+                Text(entry.category.rawValue)
+                if entry.level != .info {
+                    Text(entry.level.rawValue)
+                        .foregroundStyle(entry.level == .error ? Color.red : Color.orange)
+                }
+            }
+            .font(.mono(.caption2))
+            .foregroundStyle(Color.nvMuted)
+            Text(entry.message)
+                .font(.mono(.caption))
+                .foregroundStyle(entry.level == .error ? Color.red : Color.nvInk)
+                .textSelection(.enabled)
+        }
+    }
+}
+
+/// A live count of tik.ninja traffic at the top of the log, refreshed every two seconds.
+private struct TrafficSummary: View {
+    var body: some View {
+        TimelineView(.periodic(from: .now, by: 2)) { _ in
+            VStack(alignment: .leading, spacing: 3) {
+                Text("tik.ninja traffic")
+                    .font(.mono(.caption, weight: .bold))
+                    .foregroundStyle(Color.nvInk)
+                ForEach(Array(NetLedger.shared.liveLines().enumerated()), id: \.offset) { item in
+                    Text(item.element)
+                        .font(.mono(.caption2))
+                        .foregroundStyle(Color.nvMuted)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
 }

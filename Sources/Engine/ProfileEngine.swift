@@ -50,6 +50,8 @@ struct LookupResult: Decodable {
     let item: ItemDetail?
     let status: String
     let error: String
+    /// The lookup step by step, with the page's requests merged in (see `lookup` in WebAssets).
+    let trace: [String]?
 }
 
 struct TabSnapshot: Decodable {
@@ -105,20 +107,31 @@ final class ProfileEngine: ObservableObject {
     @Published var dialog: JSDialog? = nil {
         didSet { if let old = oldValue, old !== dialog { old.complete(false) } }
     }
+    /// Everything known about the latest failure, for the error screen's Debug details. It arrives
+    /// a moment after the failure, once the page has been asked about its own state.
+    @Published private(set) var failureReport: String? = nil
 
     private let runner = SerialRunner()
     private var started = false
     private var generation = 0
     private var slowTask: Task<Void, Never>?
+    /// Lookups this page has started; Try again and pull to refresh each add one.
+    private(set) var attempts = 0
+    private var lastFailure: Date?
+    private var lastLoggedStatus = ""
 
     /// Background downloads run headless: no history entries, and page dialogs are dismissed.
     let headless: Bool
+    /// What the page is for, as the debug log names it: screen, session copy, archive, watch check.
+    let purpose: String
 
-    init(route: Route, headless: Bool = false) {
+    init(route: Route, headless: Bool = false, purpose: String? = nil) {
         self.route = route
         self.headless = headless
+        self.purpose = purpose ?? (headless ? "hidden lookup" : "screen")
         bridge = PageBridge(WebFactory.shared.dequeue())
         bridge.delegate = self
+        bridge.owner = self.purpose + " " + (route.handle.map { "@" + $0 } ?? String(route.query.prefix(60)))
     }
 
     // MARK: Lifecycle
@@ -131,6 +144,7 @@ final class ProfileEngine: ObservableObject {
 
     func reload() async {
         generation += 1
+        DebugLog.shared.add(.web, "[\(bridge.label)] Reloading tik.ninja's page, then looking up \(route.query) again")
         bridge.reload()
         await boot()
     }
@@ -145,12 +159,21 @@ final class ProfileEngine: ObservableObject {
     private func boot() async {
         let gen = generation
         if header == nil { phase = .loading }
+        failureReport = nil
         liveStatus = ""
         armSlowTimer()
+        attempts += 1
+        let attempt = attempts
+        let began = Date()
+        var opening = "[\(bridge.label)] Lookup #\(attempt) for \(route.query)"
+        if let lastFailure { opening += ", \(PageBridge.ago(lastFailure)) after the previous one failed" }
+        DebugLog.shared.add(.web, opening)
         guard await bridge.waitUntilReady(timeout: 30) else {
             guard gen == generation else { return }
             if case .failed = phase { return } // the check-page message already explains it
-            fail("Couldn't load tik.ninja", "The page didn't finish loading. Check your connection, then try again.")
+            let state = await pageState()
+            guard gen == generation else { return }
+            fail("Couldn't load tik.ninja", "The page didn't finish loading. Check your connection, then try again.", state: state)
             return
         }
         guard gen == generation else { return }
@@ -162,7 +185,10 @@ final class ProfileEngine: ObservableObject {
             guard gen == generation else { return }
             let result = try bridge.decode(LookupResult.self, json)
             stopSlowTimer()
+            let trace = result.trace ?? []
             if let profile = result.profile {
+                DebugLog.shared.add(.web, "[\(bridge.label)] Lookup #\(attempt) found @\(profile.handle) in \(PageBridge.ms(since: began)) ms" + Self.requestSummary(trace))
+                lastFailure = nil
                 header = profile
                 tabs = [:]
                 analytics = nil
@@ -171,25 +197,43 @@ final class ProfileEngine: ObservableObject {
                 if let item = result.item { linkedPost = item }
                 await load(selectedTab)
             } else if let item = result.item {
+                DebugLog.shared.add(.web, "[\(bridge.label)] Lookup #\(attempt) opened a post in \(PageBridge.ms(since: began)) ms" + Self.requestSummary(trace))
+                lastFailure = nil
                 phase = .ready
                 linkedPost = item
-            } else if result.error == "status" {
-                fail("tik.ninja couldn't show this account", result.status)
             } else {
-                fail("No profile came back", result.status.isEmpty
-                     ? "tik.ninja didn't return this account in time. It may not exist, or the site is busy."
-                     : result.status)
+                let state = await pageState()
+                guard gen == generation else { return }
+                if result.error == "status" {
+                    fail("tik.ninja couldn't show this account", result.status, trace: trace, state: state)
+                } else {
+                    fail("No profile came back", result.status.isEmpty
+                         ? "tik.ninja didn't return this account in time. It may not exist, or the site is busy."
+                         : result.status, trace: trace, state: state)
+                }
             }
         } catch {
             guard gen == generation else { return }
-            fail("Lookup failed", error.localizedDescription)
+            let state = await pageState()
+            guard gen == generation else { return }
+            fail("Lookup failed", error.localizedDescription, state: state)
         }
     }
 
-    private func fail(_ title: String, _ detail: String) {
+    /// Shows the failure, then writes the full report (to the log, and for Debug details).
+    private func fail(_ title: String, _ detail: String, trace: [String] = [], state: [String]? = nil) {
         stopSlowTimer()
         phase = .failed(EngineFailure(title: title, detail: detail))
-        DebugLog.shared.add(.web, "\(title): \(detail)")
+        lastFailure = Date()
+        DebugLog.shared.warn(.web, "[\(bridge.label)] \(title): \(detail)")
+        let gen = generation
+        // Held strongly on purpose: a hidden page's owner may let go of it right after a failure.
+        Task {
+            let report = await self.buildReport(title: title, detail: detail, trace: trace, state: state)
+            DebugLog.shared.error(.web, report)
+            Diagnostics.lastFailureReport = report
+            if gen == self.generation { self.failureReport = report }
+        }
     }
 
     private func armSlowTimer() {
@@ -205,6 +249,81 @@ final class ProfileEngine: ObservableObject {
     private func stopSlowTimer() {
         slowTask?.cancel()
         isSlow = false
+    }
+
+    // MARK: Failure reports
+
+    /// The page's own account of itself (window.__nv.diagnose), as report lines; nil when it doesn't answer.
+    func pageState() async -> [String]? {
+        guard !bridge.isTornDown else { return nil }
+        let script = "return JSON.stringify(window.__nv && window.__nv.diagnose ? window.__nv.diagnose() : { url: location.href, title: document.title, engine: 0, bodyText: String((document.body && document.body.innerText) || '').slice(0, 600) });"
+        guard let json = try? await bridge.call(script, timeout: 5, quiet: true),
+              let object = (try? JSONSerialization.jsonObject(with: Data(json.utf8))) as? [String: Any] else { return nil }
+        return Diagnostics.describePage(object)
+    }
+
+    /// Everything that explains a failure: what the lookup did step by step, what the page itself
+    /// says, the tik.ninja traffic from every page and the app around it, and what else was running.
+    func buildReport(title: String, detail: String, trace: [String], state: [String]?) async -> String {
+        var pageLines = state
+        if pageLines == nil { pageLines = await pageState() }
+        let cookies = await Diagnostics.cookieLine()
+        var lines = ["FAILURE REPORT: \(title)"]
+        lines.append("when: \(Diagnostics.stamp(Date())), NinjaView \(Bundle.main.versionString)")
+        lines.append("page: \(bridge.label) \u{00B7} \(bridge.stateSummary)")
+        lines.append("query: \(route.query) \u{00B7} attempt \(attempts) on this page" + (headless ? " \u{00B7} a hidden page, nothing on screen" : ""))
+        if !detail.isEmpty { lines.append("shown: \(detail)") }
+        if !trace.isEmpty {
+            lines.append("the lookup, step by step (time since it started; \u{2190} marks an answer the page got):")
+            lines.append(contentsOf: trace.map { "  " + $0 })
+        }
+        if let pageLines {
+            lines.append("the page right after:")
+            lines.append(contentsOf: pageLines.map { "  " + $0 })
+        } else {
+            lines.append("the page right after: it didn't answer (closed, reloading or stuck)")
+        }
+        lines.append(cookies)
+        lines.append("tik.ninja traffic from the whole app (every hidden page plus the app's own requests):")
+        lines.append(contentsOf: NetLedger.shared.recentLines().map { "  " + $0 })
+        lines.append("running right now:")
+        lines.append(contentsOf: Diagnostics.activityLines().map { "  " + $0 })
+        lines.append("network: \(NetworkStatus.shared.summary)")
+        let hints = Diagnostics.hints(shown: detail, trace: trace, pageLabel: bridge.label, attempts: attempts)
+        if !hints.isEmpty {
+            lines.append("what this points to:")
+            lines.append(contentsOf: hints.map { "  \u{2022} " + $0 })
+        }
+        return lines.joined(separator: "\n")
+    }
+
+    /// A report without a failure, for Debug details while a lookup is still running.
+    func snapshotReport() async -> String {
+        let doing: String
+        switch phase {
+        case .loading: doing = "still looking up \(route.query)"
+        case .ready: doing = "the profile loaded"
+        case .failed(let failure): doing = failure.title
+        }
+        return await buildReport(title: "snapshot (\(doing))", detail: liveStatus, trace: [], state: nil)
+    }
+
+    /// The answers in a lookup trace, for its one-line log entry.
+    static func requestSummary(_ trace: [String]) -> String {
+        let answers = trace.compactMap { line -> String? in
+            guard let range = line.range(of: "\u{2190} ") else { return nil }
+            return String(line[range.upperBound...])
+        }
+        guard !answers.isEmpty else { return "" }
+        var text = "; the page got " + answers.prefix(4).joined(separator: " | ")
+        if answers.count > 4 { text += " | \(answers.count - 4) more" }
+        return text
+    }
+
+    /// tik.ninja shows its errors in the status line or where results would be.
+    nonisolated static func looksLikeSiteError(_ text: String) -> Bool {
+        let lower = text.lowercased()
+        return ["error", "try again", "forbidden", "429", "too many", "rate limit", "failed"].contains { lower.contains($0) }
     }
 
     // MARK: Tabs
@@ -278,7 +397,10 @@ final class ProfileEngine: ObservableObject {
             state.exhausted = snap.ended || (count == 0 && !snap.loading)
         }
         tabs[tab] = state
-        DebugLog.shared.add(.web, "\(tab.rawValue): \(count) loaded\(state.exhausted ? ", end" : "")")
+        var line = "[\(bridge.label)] \(tab.rawValue): \(count) loaded\(state.exhausted ? ", end" : "")"
+        if count == 0 && !state.message.isEmpty { line += "; tik.ninja's panel says: \(state.message)" }
+        if let error = state.error { line += "; \(error)" }
+        DebugLog.shared.add(.web, line, level: count == 0 && Self.looksLikeSiteError(state.message) ? .warning : .info)
     }
 
     /// "— All videos loaded —" becomes "All videos loaded".
@@ -373,7 +495,7 @@ final class ProfileEngine: ObservableObject {
             analytics = try bridge.decode(AnalyticsSnapshot.self, json).lines
         } catch {
             analytics = []
-            DebugLog.shared.add(.web, "Analytics failed: \(error.localizedDescription)")
+            DebugLog.shared.add(.web, "[\(bridge.label)] Analytics failed: \(error.localizedDescription)")
         }
     }
 
@@ -410,11 +532,18 @@ extension ProfileEngine: PageBridgeDelegate {
         guard let type = event["type"] as? String else { return }
         switch type {
         case "status":
-            if phase == .loading {
-                liveStatus = (event["text"] as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            let text = (event["text"] as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            if phase == .loading { liveStatus = text }
+            if !text.isEmpty && text != lastLoggedStatus {
+                DebugLog.shared.add(.web, "[\(bridge.label)] tik.ninja's status line: \(text)",
+                                    level: Self.looksLikeSiteError(text) ? .warning : .info)
             }
+            lastLoggedStatus = text
         case "noSearchBox":
             if phase == .loading {
+                let title = event["title"] as? String ?? ""
+                let url = event["url"] as? String ?? ""
+                DebugLog.shared.warn(.web, "[\(bridge.label)] No search box on the page after 4 s: \"\(title)\" at \(url)")
                 fail("tik.ninja is showing a check page", "Open the page, get past the check, then close it to continue.")
             }
         case "openProfile":
@@ -433,7 +562,7 @@ extension ProfileEngine: PageBridgeDelegate {
     }
 
     func bridgeLostContent() {
-        DebugLog.shared.add(.web, "Page process ended; reloading \(route.query)")
+        DebugLog.shared.add(.web, "[\(bridge.label)] Page process ended; reloading \(route.query)")
         Task { await reload() }
     }
 
@@ -444,10 +573,11 @@ extension ProfileEngine: PageBridgeDelegate {
 
     func bridgePresent(_ dialog: JSDialog) {
         if headless {
-            DebugLog.shared.add(.js, "Dismissed a page dialog during a download: \(dialog.message)")
+            DebugLog.shared.add(.js, "[\(bridge.label)] Dismissed a page dialog during a download: \(dialog.message)")
             dialog.complete(true)
             return
         }
+        DebugLog.shared.add(.js, "[\(bridge.label)] The page showed a dialog: \(dialog.message)")
         self.dialog = dialog
     }
 }

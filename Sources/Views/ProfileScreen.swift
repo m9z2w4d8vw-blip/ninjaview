@@ -15,6 +15,7 @@ struct ProfileScreen: View {
     @EnvironmentObject private var downloads: DownloadCenter
     @State private var panel: ProfilePanel? = nil
     @State private var notifyOpen = false
+    @State private var detailsOpen = false
 
     private let gridTabs: [ProfileTab] = [.videos, .reposts, .stories]
 
@@ -55,6 +56,9 @@ struct ProfileScreen: View {
                         .environmentObject(AvatarStore.shared)
                 }
             }
+            .sheet(isPresented: $detailsOpen) {
+                FailureDetailsSheet(engine: engine)
+            }
             .alert("tik.ninja", isPresented: dialogShown, presenting: engine.dialog) { dialog in
                 if dialog.kind == .confirm {
                     Button("Cancel", role: .cancel) { dialog.complete(false) }
@@ -83,14 +87,16 @@ struct ProfileScreen: View {
                         detail: engine.isSlow ? "tik.ninja is taking longer than usual." : (engine.liveStatus.isEmpty ? nil : engine.liveStatus),
                         showsActions: engine.isSlow,
                         onRetry: retry,
-                        onShowPage: { engine.showPage() })
+                        onShowPage: { engine.showPage() },
+                        onDetails: { detailsOpen = true })
         case .failed(let failure):
             StatusPanel(symbol: "exclamationmark.triangle",
                         title: failure.title,
                         detail: failure.detail,
                         showsActions: true,
                         onRetry: retry,
-                        onShowPage: { engine.showPage() })
+                        onShowPage: { engine.showPage() },
+                        onDetails: { detailsOpen = true })
         case .ready:
             if let header = engine.header {
                 profile(header)

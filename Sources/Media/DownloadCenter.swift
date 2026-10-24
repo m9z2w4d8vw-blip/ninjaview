@@ -133,8 +133,15 @@ final class DownloadCenter: NSObject, ObservableObject {
                 var request = URLRequest(url: url)
                 request.setValue(WebFactory.userAgent, forHTTPHeaderField: "User-Agent")
                 if let referer = LinkRules.referer(for: url) { request.setValue(referer, forHTTPHeaderField: "Referer") }
+                let began = Date()
                 let (downloaded, response) = try await session.download(for: request)
-                if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
+                let http = response as? HTTPURLResponse
+                NetLedger.shared.record(source: "app downloads", kind: "native", method: "GET", url: url, status: http?.statusCode,
+                                        ms: PageBridge.ms(since: began), retryAfter: HTTPDebug.retryAfter(response))
+                if let http, !(200..<300).contains(http.statusCode) {
+                    if LinkRules.isTikNinja(url) {
+                        DebugLog.shared.warn(.download, "\(url.host ?? "?")\(url.path) answered \(HTTPDebug.describe(http))")
+                    }
                     try? FileManager.default.removeItem(at: downloaded)
                     throw MediaError.http(http.statusCode)
                 }

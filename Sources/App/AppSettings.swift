@@ -35,6 +35,14 @@ final class AppSettings: ObservableObject {
     @Published var saveLists: Bool {
         didSet { UserDefaults.standard.set(saveLists, forKey: Keys.saveLists) }
     }
+    /// Headers and the start of the answer for every tik.ninja request in the debug log, not
+    /// only for refused ones. Applies to pages made after it changes.
+    @Published var verboseNetLog: Bool {
+        didSet {
+            UserDefaults.standard.set(verboseNetLog, forKey: Keys.verboseNetLog)
+            WebFactory.shared.settingsChanged()
+        }
+    }
 
     private enum Keys {
         static let appearance = "appearance"
@@ -44,6 +52,7 @@ final class AppSettings: ObservableObject {
         static let prefetch = "prefetch"
         static let saveComments = "saveComments"
         static let saveLists = "saveLists"
+        static let verboseNetLog = "verboseNetLog"
     }
 
     private init() {
@@ -57,5 +66,6 @@ final class AppSettings: ObservableObject {
         prefetch = defaults.bool(forKey: Keys.prefetch)
         saveComments = defaults.bool(forKey: Keys.saveComments)
         saveLists = defaults.bool(forKey: Keys.saveLists)
+        verboseNetLog = defaults.bool(forKey: Keys.verboseNetLog)
     }
 }

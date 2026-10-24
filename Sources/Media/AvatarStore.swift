@@ -44,7 +44,15 @@ final class AvatarStore: ObservableObject {
                 var request = URLRequest(url: url)
                 request.setValue(WebFactory.userAgent, forHTTPHeaderField: "User-Agent")
                 if let referer = LinkRules.referer(for: url) { request.setValue(referer, forHTTPHeaderField: "Referer") }
-                let (data, _) = try await self.session.data(for: request)
+                let began = Date()
+                let (data, response) = try await self.session.data(for: request)
+                let status = (response as? HTTPURLResponse)?.statusCode
+                NetLedger.shared.record(source: "app avatars", kind: "native", method: "GET", url: url, status: status,
+                                        ms: PageBridge.ms(since: began), retryAfter: HTTPDebug.retryAfter(response))
+                if let status, !(200..<300).contains(status) {
+                    DebugLog.shared.warn(.download, "Avatar for @\(handle) answered \(status) from \(url.host ?? "?")")
+                    return
+                }
                 guard let image = UIImage(data: data) else { return }
                 let thumb = image.preparingThumbnail(of: CGSize(width: 160, height: 160)) ?? image
                 guard let jpeg = thumb.jpegData(compressionQuality: 0.85) else { return }

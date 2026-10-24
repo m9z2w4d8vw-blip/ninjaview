@@ -75,6 +75,8 @@ struct StatusPanel: View {
     let showsActions: Bool
     let onRetry: () -> Void
     let onShowPage: () -> Void
+    /// Debug details, offered alongside the actions.
+    var onDetails: (() -> Void)? = nil
 
     var body: some View {
         VStack(spacing: 14) {
@@ -103,6 +105,14 @@ struct StatusPanel: View {
                     Button("Show page", action: onShowPage).buttonStyle(OutlineButtonStyle())
                 }
                 .padding(.top, 4)
+            }
+            if showsActions, let onDetails {
+                Button("Debug details", action: onDetails)
+                    .font(.mono(.caption, weight: .semibold))
+                    .foregroundStyle(Color.nvMuted)
+                    .buttonStyle(.plain)
+                    .padding(.top, 2)
+                    .accessibilityHint("Shows what went wrong, step by step")
             }
         }
         .padding(32)

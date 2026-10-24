@@ -33,6 +33,8 @@ struct NinjaViewApp: App {
             print("Audio session: \(error)")
         }
         DebugLog.shared.add(.app, "Launched NinjaView \(Bundle.main.versionString) on \(Diagnostics.modelIdentifier), iOS \(UIDevice.current.systemVersion)")
+        NetworkStatus.shared.start()
+        NetLedger.shared.start()
         _ = ProfileStore.session // creating it erases the previous session's downloads
         _ = ProfileStore.archive
         NotificationCenter.default.addObserver(forName: UIApplication.willTerminateNotification, object: nil, queue: .main) { _ in

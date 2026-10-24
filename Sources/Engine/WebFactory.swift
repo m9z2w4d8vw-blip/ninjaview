@@ -4,6 +4,8 @@ import WebKit
 struct PreparedWebView {
     let webView: WKWebView
     let router: ScriptRouter
+    /// The page's name in the debug log ("P3"), given when it's made; PageBridge assigns one if empty.
+    var tag: String = ""
 }
 
 /// Builds engine pages that share one in-memory website data store, and keeps
@@ -28,6 +30,8 @@ final class WebFactory: NSObject {
     private var compileTask: Task<Void, Never>?
     private var spare: PreparedWebView?
     private var spareTask: Task<Void, Never>?
+    /// The preloaded page's name in the debug log, while nobody has claimed it.
+    var spareTag: String? { spare?.tag }
 
     func warmUp() {
         compileBlockListIfNeeded()
@@ -118,7 +122,7 @@ final class WebFactory: NSObject {
         let content = WKUserContentController()
         content.add(router, name: "nv")
         let page = WebAssets.PageConfig(clean: settings.cleanLayout, noAds: settings.blockAds, theme: settings.cleanLayout,
-                                        nativeProfiles: true, nativeDownloads: true)
+                                        nativeProfiles: true, nativeDownloads: true, verboseNet: settings.verboseNetLog)
         content.addUserScript(WKUserScript(source: WebAssets.documentStartSource(page), injectionTime: .atDocumentStart, forMainFrameOnly: true))
         content.addUserScript(WKUserScript(source: WebAssets.engineJS, injectionTime: .atDocumentEnd, forMainFrameOnly: true))
         if settings.blockAds, let ruleList { content.add(ruleList) }
@@ -135,8 +139,9 @@ final class WebFactory: NSObject {
         webView.navigationDelegate = self
         EngineDock.park(webView)
         webView.load(URLRequest(url: Self.homeURL))
-        DebugLog.shared.add(.web, "Preloading tik.ninja (ad blocking \(settings.blockAds && ruleList != nil ? "on" : "off"))")
-        return PreparedWebView(webView: webView, router: router)
+        let tag = PageTags.next()
+        DebugLog.shared.add(.web, "[\(tag) spare] Preloading tik.ninja (ad blocking \(settings.blockAds && ruleList != nil ? "on" : "off")\(settings.verboseNetLog ? ", verbose network log" : ""))")
+        return PreparedWebView(webView: webView, router: router, tag: tag)
     }
 }
 
@@ -149,6 +154,20 @@ extension WebFactory: WKNavigationDelegate {
         }
         let subframe = navigationAction.targetFrame.map { !$0.isMainFrame } ?? false
         decisionHandler(subframe || url.scheme == "about" || LinkRules.isTikNinja(url) ? .allow : .cancel)
+    }
+
+    /// The preloaded page's own answer: a refusal here (Cloudflare turning it away) is otherwise invisible.
+    func webView(_ webView: WKWebView, decidePolicyFor navigationResponse: WKNavigationResponse, decisionHandler: @escaping (WKNavigationResponsePolicy) -> Void) {
+        if navigationResponse.isForMainFrame, let http = navigationResponse.response as? HTTPURLResponse {
+            var source = "spare page"
+            if let spare, spare.webView === webView { source = "\(spare.tag) spare" }
+            NetLedger.shared.record(source: source, kind: "page", method: "GET", url: http.url, status: http.statusCode, ms: nil,
+                                    retryAfter: http.value(forHTTPHeaderField: "Retry-After"))
+            if http.statusCode >= 400 {
+                DebugLog.shared.warn(.web, "[\(source)] Preloading tik.ninja answered \(HTTPDebug.describe(http))")
+            }
+        }
+        decisionHandler(.allow)
     }
 
     func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {

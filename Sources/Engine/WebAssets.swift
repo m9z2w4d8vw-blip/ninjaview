@@ -10,6 +10,8 @@ enum WebAssets {
         let theme: Bool
         let nativeProfiles: Bool
         let nativeDownloads: Bool
+        /// Headers and the start of the answer for every tik.ninja request, not only refused ones.
+        var verboseNet: Bool = false
     }
 
     /// The document-start script, with this page's settings and stylesheet baked in.
@@ -106,50 +108,290 @@ html.nv-noads iframe[src*="googleads"] { display: none !important; }
 """#
 
     /// Network logger plus the stylesheet and class bootstrap. Runs before tik.ninja's own scripts.
+    /// The logger posts a "net" message for every fetch and XMLHttpRequest, "res" batches for the
+    /// images and scripts the page loads, and "stream" messages for EventSource and WebSocket.
     static let documentStartJS = #"""
-// Runs at document start, before tik.ninja's own scripts.
+// Runs at document start, before the site's own scripts. Logs every request the page makes
+// (method, status, time, size, URL). On tik.ninja it also keeps what was sent, the answer's
+// headers, and the start of the answer whenever a request is refused or fails.
 (function () {
   'use strict';
   if (window.__nvNet) return;
   window.__nvNet = true;
+  var CFG = window.__nvConfig || {};
   function post(msg) { try { window.webkit.messageHandlers.nv.postMessage(msg); } catch (e) {} }
-  function shorten(u) {
-    try { var x = new URL(u, location.href); return x.host + x.pathname + (x.search ? x.search.slice(0, 160) : ''); }
-    catch (e) { return String(u || '').slice(0, 200); }
+  var DETAIL = /(^|\.)tik\.ninja$/i.test(location.hostname);
+  var VERBOSE = DETAIL && !!CFG.verboseNet;
+  var seq = 0;
+  // The last 80 answered requests and every unanswered one, read by the engine's lookup trace and
+  // by diagnose(), so a failure report shows what the page asked for and what came back.
+  var ring = [];
+  var pending = {};
+  window.__nvNetLog = ring;
+  window.__nvNetPending = pending;
+  window.__nvNetSeq = function () { return seq; };
+
+  function parse(u) {
+    try {
+      var x = new URL(u, location.href);
+      return { host: x.host, path: x.pathname, search: x.search, href: x.href };
+    } catch (e) {
+      var s = String(u || '');
+      return { host: '', path: s.slice(0, 200), search: '', href: s };
+    }
   }
-  // Each request tik.ninja's page makes: method, status, time taken, size and a shortened URL.
+  function shorten(p) { return p.host + p.path + (p.search ? p.search.slice(0, 300) : ''); }
+  function cut(s, n) {
+    s = String(s == null ? '' : s);
+    return s.length > n ? s.slice(0, n) + '\u2026 (' + s.length + ' chars)' : s;
+  }
+  function squash(s) { return String(s == null ? '' : s).replace(/\s+/g, ' ').trim(); }
+  // Values that could identify a session are replaced by their length.
+  var SECRET = /authorization|cookie|token|secret|csrf|xsrf|session|password|signature|api-?key/i;
+  function scrub(headers) {
+    Object.keys(headers).forEach(function (k) {
+      headers[k] = SECRET.test(k) ? '***(' + String(headers[k]).length + ' chars)' : cut(headers[k], 300);
+    });
+    return headers;
+  }
+  function headerObject(h) {
+    var out = {};
+    if (!h) return out;
+    try {
+      if (typeof Headers !== 'undefined' && h instanceof Headers) h.forEach(function (v, k) { out[String(k).toLowerCase()] = String(v); });
+      else if (Array.isArray(h)) h.forEach(function (pair) { if (pair && pair.length > 1) out[String(pair[0]).toLowerCase()] = String(pair[1]); });
+      else if (typeof h === 'object') Object.keys(h).forEach(function (k) { out[k.toLowerCase()] = String(h[k]); });
+    } catch (e) {}
+    return scrub(out);
+  }
+  function bodyText(b) {
+    if (b == null) return '';
+    try {
+      if (typeof b === 'string') return cut(b, 400);
+      if (typeof URLSearchParams !== 'undefined' && b instanceof URLSearchParams) return cut(b.toString(), 400);
+      if (typeof FormData !== 'undefined' && b instanceof FormData) {
+        var parts = [];
+        b.forEach(function (v, k) { parts.push(k + '=' + (typeof v === 'string' ? cut(v, 60) : '<file>')); });
+        return 'form: ' + cut(parts.join('&'), 400);
+      }
+      if (typeof Blob !== 'undefined' && b instanceof Blob) return '<blob, ' + b.size + ' bytes, ' + (b.type || 'no type') + '>';
+      if (typeof ArrayBuffer !== 'undefined' && (b instanceof ArrayBuffer || ArrayBuffer.isView(b))) return '<' + b.byteLength + ' bytes>';
+      return '<' + Object.prototype.toString.call(b) + '>';
+    } catch (e) { return ''; }
+  }
+  // Headers that say how close the connection is to a limit; sent with every request's line.
+  var LIMIT = /^(retry-after|x-ratelimit.*|ratelimit.*|x-rate-limit.*|cf-mitigated)$/;
+  function limitHeaders(all) {
+    var out = {};
+    Object.keys(all).forEach(function (k) { if (LIMIT.test(k)) out[k] = all[k]; });
+    return out;
+  }
+  function begin(kind, method, url) {
+    var info = { seq: ++seq, kind: kind, method: String(method || 'GET').toUpperCase(), p: parse(url), t0: Date.now(), ms: null };
+    pending[info.seq] = { method: info.method, url: shorten(info.p), t0: info.t0 };
+    return info;
+  }
+  // Called as soon as the status is known, so a lookup trace has it before the body is read.
+  function answered(info, status, note) {
+    delete pending[info.seq];
+    info.ms = Date.now() - info.t0;
+    ring.push({ seq: info.seq, at: Date.now(), ms: info.ms, method: info.method, url: shorten(info.p), status: status, note: note || '' });
+    if (ring.length > 80) ring.shift();
+  }
+  function report(info, extra) {
+    var msg = { type: 'net', seq: info.seq, kind: info.kind, method: info.method, url: shorten(info.p),
+                host: info.p.host, path: info.p.path, ms: info.ms == null ? Date.now() - info.t0 : info.ms };
+    Object.keys(extra).forEach(function (k) { msg[k] = extra[k]; });
+    var failed = msg.status >= 400 || (msg.status === 0 && msg.rtype !== 'opaque');
+    if (DETAIL && (failed || VERBOSE)) {
+      if (info.reqHeaders && Object.keys(info.reqHeaders).length) msg.reqHeaders = info.reqHeaders;
+      if (info.reqBody) msg.reqBody = info.reqBody;
+    }
+    post(msg);
+  }
+  function retryNote(all) { return all['retry-after'] ? 'retry-after ' + all['retry-after'] : ''; }
+
   if (typeof window.fetch === 'function') {
     var nativeFetch = window.fetch;
     window.fetch = function (input, init) {
-      var url = typeof input === 'string' ? input : (input && (input.url || input.href)) || '';
-      var method = (init && init.method) || (input && input.method) || 'GET';
-      var t0 = Date.now();
-      var request = nativeFetch.apply(window, arguments);
+      var info = null;
+      try {
+        var url = typeof input === 'string' ? input : (input && (input.url || input.href)) || String(input || '');
+        info = begin('fetch', (init && init.method) || (input && input.method) || 'GET', url);
+        if (DETAIL) {
+          info.reqHeaders = headerObject((init && init.headers) || (input && input.headers));
+          if (init && init.credentials) info.reqHeaders['(credentials)'] = String(init.credentials);
+          if (init && init.mode) info.reqHeaders['(mode)'] = String(init.mode);
+          if (init && init.cache) info.reqHeaders['(cache)'] = String(init.cache);
+          info.reqBody = bodyText(init && init.body);
+        }
+      } catch (e) { info = null; }
+      var request;
+      try {
+        request = nativeFetch.apply(window, arguments);
+      } catch (e) {
+        if (info) answered(info, 0, String((e && e.message) || e));
+        throw e;
+      }
+      if (!info) return request;
       request.then(function (r) {
-        var size = Number(r.headers && r.headers.get('content-length')) || 0;
-        post({ type: 'net', method: method, url: shorten(url), status: r.status, ms: Date.now() - t0, size: size });
+        var all = {};
+        try { r.headers.forEach(function (v, k) { all[String(k).toLowerCase()] = String(v); }); } catch (e) {}
+        scrub(all);
+        var failed = r.status >= 400 || (r.status === 0 && r.type !== 'opaque');
+        var extra = { status: r.status, statusText: r.statusText || '', rtype: r.type || '', size: Number(all['content-length']) || 0 };
+        extra.resHeaders = DETAIL && (failed || VERBOSE) ? all : limitHeaders(all);
+        if (r.redirected && r.url) extra.finalURL = shorten(parse(r.url));
+        answered(info, r.status, retryNote(all));
+        var type = all['content-type'] || '';
+        var readable = DETAIL && (failed || VERBOSE) && r.type !== 'opaque' && extra.size < 300000 &&
+          (!type || /json|text|html|xml|javascript/i.test(type));
+        var copy = null;
+        if (readable) { try { copy = r.clone(); } catch (e) { copy = null; } }
+        if (!copy) { report(info, extra); return; }
+        copy.text().then(function (t) {
+          extra.body = cut(squash(t), failed ? 2000 : 400);
+          if (!extra.size) extra.size = t.length;
+          report(info, extra);
+        }, function (e) {
+          extra.body = '(couldn\u2019t read it: ' + String((e && e.message) || e) + ')';
+          report(info, extra);
+        });
       }, function (err) {
-        post({ type: 'net', method: method, url: shorten(url), status: 0, ms: Date.now() - t0, size: 0, error: String(err) });
-      });
+        var why = String((err && err.message) || err);
+        answered(info, 0, why);
+        report(info, { status: 0, error: why, online: navigator.onLine });
+      }).catch(function () {});
       return request;
     };
   }
   if (window.XMLHttpRequest) {
-    var proto = XMLHttpRequest.prototype, open = proto.open, send = proto.send;
-    proto.open = function (method, url) { this.__nvInfo = { method: method, url: url }; return open.apply(this, arguments); };
-    proto.send = function () {
-      var xhr = this, t0 = Date.now();
-      xhr.addEventListener('loadend', function () {
-        var i = xhr.__nvInfo || {}, size = 0;
-        try {
-          size = Number(xhr.getResponseHeader('content-length')) || (typeof xhr.responseText === 'string' ? xhr.responseText.length : 0);
-        } catch (e) { size = 0; }
-        post({ type: 'net', method: i.method || 'GET', url: shorten(i.url), status: xhr.status, ms: Date.now() - t0, size: size });
-      });
-      return send.apply(this, arguments);
+    var proto = XMLHttpRequest.prototype, open = proto.open, sendXHR = proto.send, setHeader = proto.setRequestHeader;
+    proto.open = function (method, url) {
+      try { this.__nvInfo = { method: method, url: url, headers: {} }; } catch (e) {}
+      return open.apply(this, arguments);
+    };
+    proto.setRequestHeader = function (name, value) {
+      try { if (this.__nvInfo) this.__nvInfo.headers[String(name).toLowerCase()] = String(value); } catch (e) {}
+      return setHeader.apply(this, arguments);
+    };
+    proto.send = function (body) {
+      var xhr = this;
+      try {
+        var given = xhr.__nvInfo || { method: 'GET', url: '', headers: {} };
+        var info = begin('xhr', given.method, given.url);
+        if (DETAIL) { info.reqHeaders = headerObject(given.headers); info.reqBody = bodyText(body); }
+        xhr.__nvCurrent = info;
+        var reason = '';
+        ['error', 'abort', 'timeout'].forEach(function (name) {
+          xhr.addEventListener(name, function () { if (xhr.__nvCurrent === info) reason = name; });
+        });
+        xhr.addEventListener('loadend', function () {
+          if (xhr.__nvCurrent !== info) return;
+          var all = {};
+          try {
+            String(xhr.getAllResponseHeaders() || '').trim().split(/[\r\n]+/).forEach(function (line) {
+              var at = line.indexOf(':');
+              if (at > 0) all[line.slice(0, at).trim().toLowerCase()] = line.slice(at + 1).trim();
+            });
+          } catch (e) {}
+          scrub(all);
+          var status = xhr.status;
+          var failed = status === 0 || status >= 400;
+          var text = '';
+          try {
+            if (!xhr.responseType || xhr.responseType === 'text') text = String(xhr.responseText || '');
+            else if (xhr.responseType === 'json' && xhr.response != null) text = JSON.stringify(xhr.response);
+          } catch (e) { text = ''; }
+          var extra = { status: status, statusText: xhr.statusText || '', size: Number(all['content-length']) || text.length };
+          extra.resHeaders = DETAIL && (failed || VERBOSE) ? all : limitHeaders(all);
+          if (reason) extra.error = reason;
+          if (xhr.responseURL && xhr.responseURL !== info.p.href) extra.finalURL = shorten(parse(xhr.responseURL));
+          if (DETAIL && text && (failed || VERBOSE)) extra.body = cut(squash(text), failed ? 2000 : 400);
+          answered(info, status, reason || retryNote(all));
+          report(info, extra);
+        });
+      } catch (e) {}
+      return sendXHR.apply(this, arguments);
     };
   }
-  // Console warnings and errors from tik.ninja's own scripts.
+  // Streaming connections, in case tik.ninja's search ever uses one.
+  if (DETAIL && typeof window.EventSource === 'function') {
+    try {
+      var NativeES = window.EventSource;
+      window.EventSource = class EventSource extends NativeES {
+        constructor(url, config) {
+          super(url, config);
+          var es = this, p = parse(url), t0 = Date.now(), id = ++seq, count = 0, errors = 0;
+          var tell = function (event, more) {
+            var msg = { type: 'stream', kind: 'sse', seq: id, event: event, url: shorten(p), host: p.host, path: p.path, ms: Date.now() - t0 };
+            if (more) Object.keys(more).forEach(function (k) { msg[k] = more[k]; });
+            post(msg);
+          };
+          tell('connect');
+          es.addEventListener('open', function () { tell('open'); });
+          es.addEventListener('message', function (e) { count += 1; if (count <= 3) tell('message', { data: cut(squash(e.data), 300), count: count }); });
+          es.addEventListener('error', function () { errors += 1; if (errors <= 5) tell('error', { state: es.readyState, count: count }); });
+        }
+      };
+    } catch (e) {}
+  }
+  if (DETAIL && typeof window.WebSocket === 'function') {
+    try {
+      var NativeWS = window.WebSocket;
+      window.WebSocket = class WebSocket extends NativeWS {
+        constructor(url, protocols) {
+          if (protocols === undefined) super(url); else super(url, protocols);
+          var ws = this, p = parse(url), t0 = Date.now(), id = ++seq, count = 0;
+          var tell = function (event, more) {
+            var msg = { type: 'stream', kind: 'ws', seq: id, event: event, url: shorten(p), host: p.host, path: p.path, ms: Date.now() - t0 };
+            if (more) Object.keys(more).forEach(function (k) { msg[k] = more[k]; });
+            post(msg);
+          };
+          tell('connect');
+          ws.addEventListener('open', function () { tell('open'); });
+          ws.addEventListener('message', function (e) {
+            count += 1;
+            if (count <= 3) tell('message', { data: typeof e.data === 'string' ? cut(squash(e.data), 300) : '<binary>', count: count });
+          });
+          ws.addEventListener('close', function (e) { tell('close', { code: e.code, reason: e.reason || '', count: count }); });
+          ws.addEventListener('error', function () { tell('error', { state: ws.readyState, count: count }); });
+        }
+      };
+    } catch (e) {}
+  }
+  // Images, scripts, fonts and the like, batched every five seconds. The tik.ninja ones (its image
+  // proxy, for one) count toward its limit as much as any fetch.
+  if (DETAIL && typeof PerformanceObserver === 'function') {
+    var batch = [], others = {}, flushTimer = null;
+    var flushResources = function () {
+      flushTimer = null;
+      if (!batch.length && !Object.keys(others).length) return;
+      post({ type: 'res', items: batch, others: others });
+      batch = [];
+      others = {};
+    };
+    try {
+      new PerformanceObserver(function (list) {
+        list.getEntries().forEach(function (e) {
+          var kind = e.initiatorType || 'other';
+          if (kind === 'fetch' || kind === 'xmlhttprequest' || kind === 'beacon') return; // logged above
+          var p = parse(e.name);
+          if (/(^|\.)tik\.ninja$/i.test(p.host)) {
+            if (batch.length < 300) {
+              batch.push({ host: p.host, path: p.path, kind: kind, ms: Math.round(e.duration || 0),
+                           size: e.transferSize || 0, status: e.responseStatus || 0 });
+            }
+          } else {
+            var key = (p.host || 'unknown') + ' ' + kind;
+            others[key] = (others[key] || 0) + 1;
+          }
+        });
+        if (!flushTimer) flushTimer = setTimeout(flushResources, 5000);
+      }).observe({ type: 'resource', buffered: true });
+    } catch (e) {}
+  }
+  // Console warnings and errors from the site's own scripts.
   ['warn', 'error'].forEach(function (level) {
     var original = console[level];
     if (typeof original !== 'function') return;
@@ -262,14 +504,55 @@ html.nv-noads iframe[src*="googleads"] { display: none !important; }
   }
 
   // ---- diagnostics, shown in Settings > Debug log ------------------------------
+  // The latest script errors, kept for diagnose() as well as logged.
+  var recentErrors = [];
+  function noteError(text) {
+    recentErrors.push(new Date().toISOString().slice(11, 23) + '  ' + text);
+    if (recentErrors.length > 15) recentErrors.shift();
+  }
   window.addEventListener('error', function (e) {
     var where = e.filename ? ' (' + String(e.filename).split('/').pop() + ':' + e.lineno + ')' : '';
-    post('log', { message: String(e.message || 'Script error') + where });
+    var text = String(e.message || 'Script error') + where;
+    noteError(text);
+    post('log', { message: text });
   });
   window.addEventListener('unhandledrejection', function (e) {
     var r = e.reason;
-    post('log', { message: 'Unhandled rejection: ' + String((r && r.message) || r) });
+    var text = 'Unhandled rejection: ' + String((r && r.message) || r);
+    noteError(text);
+    post('log', { message: text });
   });
+  function clip(s, n) {
+    s = String(s == null ? '' : s);
+    return s.length > n ? s.slice(0, n) + '\u2026 (' + s.length + ' chars)' : s;
+  }
+
+  // ---- lookup traces -------------------------------------------------------------
+  // Each step of a lookup with its time since the lookup began, merged at the end with every
+  // request the page answered (or is still waiting on) since then.
+  function note(trace, text) { if (trace) trace.steps.push({ ms: Date.now() - trace.t0, text: text }); }
+  function pad(ms) {
+    var s = String(Math.max(0, Math.round(ms)));
+    while (s.length < 6) s = ' ' + s;
+    return '+' + s + ' ms';
+  }
+  function netSeq() { return typeof window.__nvNetSeq === 'function' ? window.__nvNetSeq() : 0; }
+  function traceLines(trace, seq0) {
+    var rows = trace.steps.slice();
+    (window.__nvNetLog || []).forEach(function (n) {
+      if (n.seq <= seq0) return;
+      rows.push({ ms: n.at - trace.t0, text: '\u2190 ' + n.method + ' ' + (n.status || 'failed') + ' ' + n.url +
+        ' (sent at +' + Math.max(0, n.at - n.ms - trace.t0) + ' ms, answered in ' + n.ms + ' ms' + (n.note ? ', ' + n.note : '') + ')' });
+    });
+    var open = window.__nvNetPending || {};
+    Object.keys(open).forEach(function (k) {
+      if (Number(k) <= seq0) return;
+      var q = open[k];
+      rows.push({ ms: Date.now() - trace.t0, text: 'still waiting: ' + q.method + ' ' + q.url + ' (sent at +' + Math.max(0, q.t0 - trace.t0) + ' ms)' });
+    });
+    rows.sort(function (a, b) { return a.ms - b.ms; });
+    return rows.map(function (r) { return pad(r.ms) + '  ' + r.text; });
+  }
 
   // ---- profile header ----------------------------------------------------------
   function readProfile() {
@@ -329,18 +612,26 @@ html.nv-noads iframe[src*="googleads"] { display: none !important; }
     if (commentsOpen()) { var cx = $('#comments-panel .modal-x'); if (cx) cx.click(); }
     if (modalOpen()) { var x = $('#modal .modal-x'); if (x) x.click(); }
   }
-  function search(query) {
+  function search(query, trace) {
     var input = byId('search-input');
     var button = byId('search-btn');
-    if (!input || !button) return 'not-ready';
+    if (!input || !button) {
+      note(trace, 'search box ' + (input ? 'found' : 'missing') + ', Search button ' + (button ? 'found' : 'missing') + ' on ' + location.href);
+      return 'not-ready';
+    }
     closeOverlays();
     last.handle = null;
     last.status = null;
     setValue(input, query);
-    var tries = 0;
+    note(trace, 'typed ' + JSON.stringify(query) + ' into the search box' +
+      (button.disabled ? '; the Search button is disabled (an earlier lookup may still be running)' : ''));
+    var tries = 0, waitStart = Date.now();
     (function go() {
       // The site disables the button while a lookup is in flight.
       if (button.disabled && tries++ < 60) { setTimeout(go, 125); return; }
+      var waited = Date.now() - waitStart;
+      note(trace, button.disabled ? 'the Search button was still disabled after ' + waited + ' ms; clicked it anyway'
+        : (waited > 50 ? 'clicked Search after waiting ' + waited + ' ms for the button' : 'clicked Search'));
       button.click();
     })();
     return 'ok';
@@ -349,24 +640,33 @@ html.nv-noads iframe[src*="googleads"] { display: none !important; }
     return /not found|no user|doesn.?t exist|does not exist|private|error|failed|unable|couldn.?t|could not|invalid|limit|try again|unavailable|blocked|banned|suspended/i.test(s);
   }
   async function lookup(query) {
-    var started = search(query);
-    if (started !== 'ok') return { profile: null, item: null, status: '', error: started };
+    var trace = { t0: Date.now(), steps: [] };
+    var seq0 = netSeq();
+    note(trace, 'lookup started on ' + location.href + ', ' + Math.round(performance.now()) + ' ms after the page began loading');
+    var started = search(query, trace);
+    if (started !== 'ok') return { profile: null, item: null, status: '', error: started, trace: traceLines(trace, seq0) };
     var t0 = Date.now();
+    var seen = null;
     var outcome = await until(function () {
-      if (readProfile() || (modalOpen() && mediaSrc())) return 'found';
       var s = raw(byId('search-status'));
+      if (s !== seen) { seen = s; note(trace, 'status line: ' + (s ? '\u201c' + s + '\u201d' : '(empty)')); }
+      if (readProfile() || (modalOpen() && mediaSrc())) return 'found';
       if (s && looksLikeError(s) && Date.now() - t0 > 400) return 'error';
       return null;
     }, 30000, 120);
     if (outcome === 'found') {
+      var shownProfile = readProfile();
+      note(trace, shownProfile ? 'the profile header appeared (@' + shownProfile.handle + ')' : 'a post opened');
       // A pasted post link also opens that post once the profile renders.
       if (/^https?:/i.test(query) && !modalOpen()) {
         await until(function () { return modalOpen() && mediaSrc() ? true : null; }, 1500, 100);
       }
       var item = modalOpen() ? await readItem() : null;
-      return { profile: readProfile(), item: item, status: '', error: '' };
+      return { profile: readProfile(), item: item, status: '', error: '', trace: traceLines(trace, seq0) };
     }
-    return { profile: null, item: null, status: raw(byId('search-status')), error: outcome === 'error' ? 'status' : 'timeout' };
+    note(trace, outcome === 'error' ? 'stopped: the status line shows an error' : 'stopped: no profile and no error after 30 s');
+    return { profile: null, item: null, status: raw(byId('search-status')), error: outcome === 'error' ? 'status' : 'timeout',
+             trace: traceLines(trace, seq0) };
   }
 
   // ---- tabs --------------------------------------------------------------------
@@ -774,6 +1074,62 @@ html.nv-noads iframe[src*="googleads"] { display: none !important; }
     if (b && !b.disabled) b.click();
   }, { passive: true });
 
+  // ---- diagnose: the page's own account of itself, for failure reports ------------
+  function diagnose() {
+    var status = byId('search-status');
+    var input = byId('search-input'), button = byId('search-btn');
+    var nav = null;
+    try { nav = performance.getEntriesByType('navigation')[0] || null; } catch (e) { nav = null; }
+    var cookies = String(document.cookie || '').split(';').map(function (c) { return c.split('=')[0].trim(); }).filter(Boolean);
+    var storage = [];
+    try { for (var i = 0; i < localStorage.length && i < 40; i++) storage.push(localStorage.key(i)); } catch (e) { storage = ['(unavailable)']; }
+    var challenge = $$('#challenge-form, #challenge-running, #challenge-stage, #cf-wrapper, .cf-browser-verification, .cf-error-details, ' +
+      '[name="cf-turnstile-response"], iframe[src*="challenges.cloudflare.com"], iframe[src*="turnstile"], iframe[src*="captcha"], .g-recaptcha, .h-captcha')
+      .slice(0, 8).map(function (el) { return el.tagName.toLowerCase() + (el.id ? '#' + el.id : ''); });
+    var vignette = byId('custom-vignette');
+    var profile = readProfile();
+    var net = (window.__nvNetLog || []).slice(-25).map(function (n) {
+      return new Date(n.at).toISOString().slice(11, 23) + '  ' + n.method + ' ' + (n.status || 'failed') + ' ' + n.ms + ' ms  ' + n.url + (n.note ? '  (' + n.note + ')' : '');
+    });
+    var open = window.__nvNetPending || {};
+    var waiting = Object.keys(open).map(function (k) { var q = open[k]; return q.method + ' ' + q.url + ', ' + (Date.now() - q.t0) + ' ms so far'; });
+    var visible = '';
+    try { visible = String((document.body && document.body.innerText) || '').replace(/\s+/g, ' ').trim(); } catch (e) { visible = ''; }
+    return {
+      engine: 3,
+      url: location.href,
+      title: document.title,
+      readyState: document.readyState,
+      visibility: document.visibilityState,
+      online: navigator.onLine,
+      sinceLoad: Math.round(performance.now()),
+      navigation: nav ? { type: nav.type || '', status: nav.responseStatus || 0, ms: Math.round(nav.duration || 0), size: nav.transferSize || 0 } : null,
+      userAgent: navigator.userAgent,
+      language: navigator.language || '',
+      webdriver: !!navigator.webdriver,
+      viewport: window.innerWidth + 'x' + window.innerHeight + ' @' + (window.devicePixelRatio || 1) + 'x',
+      searchBox: !!input,
+      searchValue: input ? String(input.value || '') : '',
+      searchButton: !!button,
+      buttonDisabled: !!(button && button.disabled),
+      buttonText: raw(button),
+      status: raw(status),
+      statusHTML: status ? clip(status.innerHTML, 400) : '',
+      statusClass: status ? String(status.className || '') : '',
+      profile: profile ? profile.handle : '',
+      modal: modalOpen(),
+      comments: commentsOpen(),
+      vignette: !!(vignette && vignette.style.display !== 'none' && shown(vignette)),
+      challenge: challenge,
+      cookies: cookies,
+      storage: storage,
+      errors: recentErrors.slice(),
+      net: net,
+      waiting: waiting,
+      bodyText: clip(visible, 600)
+    };
+  }
+
   // ---- readiness ---------------------------------------------------------------
   var readySent = false;
   function sendReady() {
@@ -785,8 +1141,9 @@ html.nv-noads iframe[src*="googleads"] { display: none !important; }
   }
 
   window.__nv = {
-    version: 2,
+    version: 3,
     search: search,
+    diagnose: diagnose,
     lookup: lookup,
     profile: readProfile,
     tabState: tabState,

@@ -33,6 +33,7 @@ final class IGSession: ObservableObject, PageBridgeDelegate {
         // Must be set before the main runloop yields so the first navigation decision sees it.
         bridge.allowsInstagram = true
         bridge.delegate = self
+        bridge.owner = "instagram session"
     }
 
     /// Prepares the hidden page to be shown in the verify sheet: makes sure it's loaded and signed

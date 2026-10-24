@@ -38,6 +38,7 @@ final class IGEngine: ObservableObject, PageBridgeDelegate {
         pageURL = IGLinks.viewer(handle) ?? IGLinks.home
         bridge = PageBridge(WebFactory.shared.makeInstagramPage(pageURL))
         bridge.delegate = self
+        bridge.owner = headless ? "instagram (hidden) @\(handle)" : "instagram @\(handle)"
         DebugLog.shared.add(.web, "Opening Instagram @\(handle)\(headless ? " out of sight" : "")")
     }
 
