@@ -128,6 +128,8 @@ final class ProfileEngine: ObservableObject {
     static let staleAfter: TimeInterval = 18 * 60
     /// New sessions a lookup may start on its own before it shows a failure.
     static let maxAutoHeals = 2
+    /// How long a page that has just loaded waits before its first request.
+    static let settleTime: TimeInterval = 1.5
 
     let route: Route
     let bridge: PageBridge
@@ -169,6 +171,8 @@ final class ProfileEngine: ObservableObject {
     private var autoHeals = 0
     private var refreshing = false
     private var lastReactiveRefresh: Date?
+    /// When the page last finished loading (its "ready"), for the moment it gets before its first request.
+    private var lastReadyAt = Date.distantPast
 
     /// Background downloads run headless: no history entries, and page dialogs are dismissed.
     let headless: Bool
@@ -243,6 +247,15 @@ final class ProfileEngine: ObservableObject {
             await refreshSession("it went \(PageBridge.ago(lastSessionUse)) without an answer, long enough for tik.ninja to end it")
             return
         }
+        // A page that has only just loaded gets a moment before its first request: lookups sent within
+        // a fraction of a second of a reload were refused.
+        let settle = Self.settleTime - Date().timeIntervalSince(lastReadyAt)
+        if settle > 0 {
+            try? await Task.sleep(nanoseconds: UInt64(settle * 1_000_000_000))
+            guard gen == generation else { return }
+        }
+        await slot()
+        guard gen == generation else { return }
         // Grid tabs that had loaded come back after a reload (their first page).
         let restore = ProfileTab.allCases.filter { !$0.showsUsers && $0 != selectedTab && tabs[$0]?.isEmpty == false }
         do {
@@ -279,7 +292,11 @@ final class ProfileEngine: ObservableObject {
                 let kind = result.kind ?? ""
                 if kind == "forbidden" && autoHeals < Self.maxAutoHeals && !bridge.isTornDown {
                     autoHeals += 1
-                    DebugLog.shared.warn(.web, "[\(bridge.label)] Lookup #\(attempt): tik.ninja refused this page's session (\(result.status.isEmpty ? "HTTP 403" : result.status)); trying again in a new session")
+                    // Not straight away: new sessions that searched the moment they loaded were refused too.
+                    let pause: UInt64 = autoHeals == 1 ? 3 : 10
+                    DebugLog.shared.warn(.web, "[\(bridge.label)] Lookup #\(attempt): tik.ninja refused this page's session (\(result.status.isEmpty ? "HTTP 403" : result.status)); trying again in a new session in \(pause) s")
+                    try? await Task.sleep(nanoseconds: pause * 1_000_000_000)
+                    guard gen == generation else { return }
                     await refreshSession("tik.ninja refused its session during a lookup")
                     return
                 }
@@ -374,6 +391,19 @@ final class ProfileEngine: ObservableObject {
         let removed = await WebFactory.shared.clearSession(of: bridge.webView)
         DebugLog.shared.add(.web, "[\(bridge.label)] Starting a new tik.ninja session for this page (\(why)); cleared \(removed) of its cookies")
         await reload()
+    }
+
+    private var gatePriority: TikGate.Priority {
+        if !headless { return .foreground }
+        return purpose == "watch check" ? .watch : .background
+    }
+
+    /// Waits for a slot in the app-wide allowance before anything that asks tik.ninja's API.
+    private func slot() async {
+        if !headless && phase == .loading && TikGate.shared.wouldWait(gatePriority) {
+            liveStatus = TikGate.shared.userMessage
+        }
+        await TikGate.shared.acquire(gatePriority, for: bridge.label)
     }
 
     /// A page call tik.ninja refused becomes an error the caller can act on.
@@ -539,6 +569,8 @@ final class ProfileEngine: ObservableObject {
         let gen = generation
         let name = tab.rawValue
         do {
+            await slot()
+            guard gen == generation else { return }
             let json = try await runner.run { [bridge] in
                 try await bridge.call("return JSON.stringify(await window.__nv.openTab(t, a));", ["t": name, "a": again], timeout: 50)
             }
@@ -563,6 +595,8 @@ final class ProfileEngine: ObservableObject {
         let gen = generation
         let name = tab.rawValue
         do {
+            await slot()
+            guard gen == generation else { return }
             let json = try await runner.run { [bridge] in
                 try await bridge.call("return JSON.stringify(await window.__nv.loadMore(t));", ["t": name], timeout: 40)
             }
@@ -665,6 +699,7 @@ final class ProfileEngine: ObservableObject {
 
     func openComments() async throws -> CommentsSnapshot {
         await freshen()
+        await slot()
         let json = try await runner.run { [bridge] in
             try await bridge.call("return JSON.stringify(await window.__nv.comments());", timeout: 30)
         }
@@ -676,6 +711,7 @@ final class ProfileEngine: ObservableObject {
 
     func moreComments() async throws -> CommentsSnapshot {
         await freshen()
+        await slot()
         let json = try await runner.run { [bridge] in
             try await bridge.call("return JSON.stringify(await window.__nv.moreComments());", timeout: 30)
         }
@@ -685,6 +721,7 @@ final class ProfileEngine: ObservableObject {
 
     func replies(_ index: Int) async throws -> CommentItem {
         await freshen()
+        await slot()
         let json = try await runner.run { [bridge] in
             try await bridge.call("return JSON.stringify(await window.__nv.replies(i));", ["i": index], timeout: 30)
         }
@@ -695,6 +732,7 @@ final class ProfileEngine: ObservableObject {
 
     func moreReplies(_ index: Int) async throws -> CommentItem {
         await freshen()
+        await slot()
         let json = try await runner.run { [bridge] in
             try await bridge.call("return JSON.stringify(await window.__nv.moreReplies(i));", ["i": index], timeout: 30)
         }
@@ -773,6 +811,7 @@ extension ProfileEngine: PageBridgeDelegate {
             } else {
                 lastSessionUse = Date()
             }
+            lastReadyAt = lastSessionUse
         case "net":
             guard let host = event["host"] as? String, NetLedger.isTikNinja(NetLedger.bareHost(host)),
                   (event["path"] as? String ?? "").hasPrefix("/api") else { break }

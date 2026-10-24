@@ -136,6 +136,8 @@ final class IGLiveGridModel: ObservableObject {
 /// comments comes from the grid, so the post opens at once; the comments load from its page.
 @MainActor
 struct IGLivePostSheet: View {
+    /// Threads showing every reply; the rest show their first reply and "View All N replies".
+    @State private var openThreads: Set<String> = []
     let handle: String
     let item: IGGridItem
     @ObservedObject var model: IGLiveGridModel
@@ -368,10 +370,21 @@ struct IGLivePostSheet: View {
                     .padding(.horizontal, 14)
             } else {
                 ForEach(topLevel, id: \.id) { comment in
+                    let thread = replies(to: comment.id)
+                    let open = openThreads.contains(comment.id)
                     IGLiveCommentRow(comment: comment, indent: false)
-                    ForEach(replies(to: comment.id), id: \.id) { reply in
+                    ForEach(open ? thread : Array(thread.prefix(1)), id: \.id) { reply in
                         IGLiveCommentRow(comment: reply, indent: true)
                     }
+                    if thread.count > 1 {
+                        RetroRepliesToggle(title: open ? "Hide replies" : Retro.viewReplies(thread.count),
+                                           avatars: open ? [] : thread.prefix(2).map { RetroAvatar.url(URL.remote($0.avatar)) }) {
+                            if open { openThreads.remove(comment.id) } else { openThreads.insert(comment.id) }
+                        }
+                        .padding(.leading, Retro.side + Retro.replyIndent)
+                        .padding(.vertical, 6)
+                    }
+                    RetroHairline(inset: Retro.side + Retro.replyIndent)
                 }
                 if loadingComments {
                     loadingRow
@@ -455,50 +468,12 @@ struct IGLiveCommentRow: View {
     let indent: Bool
 
     var body: some View {
-        HStack(alignment: .top, spacing: 10) {
-            RemoteImage(URL.remote(comment.avatar), maxPixel: 96)
-                .frame(width: indent ? 26 : 32, height: indent ? 26 : 32)
-                .clipShape(Circle())
-                .accessibilityHidden(true)
-            VStack(alignment: .leading, spacing: 3) {
-                HStack(spacing: 4) {
-                    Text(comment.author)
-                        .font(.footnote.weight(.semibold))
-                        .foregroundStyle(Color.nvInk)
-                        .lineLimit(1)
-                    if comment.verified {
-                        Image(systemName: "checkmark.seal.fill")
-                            .font(.caption2)
-                            .foregroundStyle(Color.nvSignal)
-                    }
-                    if let age = IGTime.short(comment.time) {
-                        Text(age)
-                            .font(.caption)
-                            .foregroundStyle(Color.nvMuted)
-                    }
-                }
-                if !comment.text.isEmpty {
-                    Text(comment.text)
-                        .font(.footnote)
-                        .foregroundStyle(Color.nvInk)
-                        .fixedSize(horizontal: false, vertical: true)
-                        .textSelection(.enabled)
-                }
-                if let gif = comment.image.flatMap({ URL.remote($0) }) {
-                    RemoteImage(gif, maxPixel: 400, mode: .fit, placeholder: .clear)
-                        .frame(maxWidth: 140, maxHeight: 140, alignment: .leading)
-                }
-                if comment.likes > 0 {
-                    Text(comment.likes == 1 ? "1 like" : "\(comment.likes.formatted()) likes")
-                        .font(.caption2.weight(.semibold))
-                        .foregroundStyle(Color.nvMuted)
-                }
-            }
-            Spacer(minLength: 0)
-        }
-        .padding(.leading, indent ? 56 : 14)
-        .padding(.trailing, 14)
-        .padding(.vertical, 7)
+        RetroCommentRow(author: comment.author, avatar: .url(URL.remote(comment.avatar)), verified: comment.verified,
+                        text: comment.text, age: IGTime.short(comment.time) ?? "", likes: Retro.likes(comment.likes),
+                        gif: comment.image.flatMap { URL.remote($0) }, isReply: indent, platform: .instagram)
+            .padding(.leading, indent ? Retro.side + Retro.replyIndent : Retro.side)
+            .padding(.trailing, Retro.side)
+            .padding(.vertical, indent ? 6 : 10)
     }
 }
 

@@ -50,7 +50,7 @@ struct IGPostDetailView: View {
         .statusBarHidden()
         .task(id: index) { await loadCurrent() }
         .onDisappear { player.stop() }
-        .sheet(isPresented: $commentsOpen) {
+        .fullScreenCover(isPresented: $commentsOpen) {
             IGCommentsSheet(handle: handle, post: post)
         }
     }
@@ -159,67 +159,62 @@ private struct PageDotsRow: View {
     }
 }
 
-/// An archived post's saved comments, threaded: replies sit under their parent.
+/// An archived post's saved comments, laid out like Instagram's comments screen of 2016–2017: the caption
+/// first, then each comment with its first reply and "View All N replies" for the rest.
 struct IGCommentsSheet: View {
     let handle: String
     let post: IGArchive.Item
     @Environment(\.dismiss) private var dismiss
+    @State private var openThreads: Set<String> = []
 
     private var topLevel: [IGArchive.StoredComment] { post.comments.filter { $0.parent.isEmpty } }
     private func replies(to id: String) -> [IGArchive.StoredComment] { post.comments.filter { $0.parent == id } }
 
     var body: some View {
-        NavigationStack {
-            List {
-                if !post.caption.isEmpty {
-                    Section {
-                        commentRow(author: handle, verified: false, text: post.caption, time: post.takenAt, likes: post.likes, indent: false)
+        RetroCommentsScreen(onBack: { dismiss() }) {
+            if !post.caption.isEmpty {
+                RetroCommentRow(author: handle, avatar: .stored(Platform.instagram.key(handle)), text: post.caption,
+                                age: IGTime.short(post.takenAt) ?? "", isCaption: true, platform: .instagram)
+                    .padding(.horizontal, Retro.side)
+                    .padding(.vertical, 12)
+                RetroHairline()
+            }
+            if post.comments.isEmpty {
+                Text("No comments saved.")
+                    .font(.footnote)
+                    .foregroundStyle(Retro.gray)
+                    .frame(maxWidth: .infinity)
+                    .padding(32)
+            }
+            ForEach(topLevel, id: \.id) { comment in
+                let thread = replies(to: comment.id)
+                let open = openThreads.contains(comment.id)
+                VStack(alignment: .leading, spacing: 0) {
+                    row(comment, isReply: false)
+                    ForEach(open ? thread : Array(thread.prefix(1)), id: \.id) { reply in
+                        row(reply, isReply: true)
+                            .padding(.leading, Retro.replyIndent)
+                            .padding(.top, 14)
                     }
-                }
-                Section {
-                    ForEach(topLevel, id: \.id) { c in
-                        commentRow(author: c.author, verified: c.verified, text: c.text, time: c.time, likes: c.likes, indent: false)
-                        ForEach(replies(to: c.id), id: \.id) { r in
-                            commentRow(author: r.author, verified: r.verified, text: r.text, time: r.time, likes: r.likes, indent: true)
+                    if thread.count > 1 {
+                        RetroRepliesToggle(title: open ? "Hide replies" : Retro.viewReplies(thread.count),
+                                           avatars: open ? [] : thread.prefix(2).map { RetroAvatar.stored(Platform.instagram.key($0.author)) }) {
+                            if open { openThreads.remove(comment.id) } else { openThreads.insert(comment.id) }
                         }
+                        .padding(.leading, Retro.replyIndent)
+                        .padding(.top, 12)
                     }
-                } header: {
-                    Text(post.comments.isEmpty ? "No comments saved" : "\(post.comments.count) comments")
                 }
+                .padding(.horizontal, Retro.side)
+                .padding(.vertical, 12)
+                RetroHairline(inset: Retro.side + Retro.replyIndent)
             }
-            .listStyle(.plain)
-            .background(Color.nvPaper)
-            .navigationTitle("Comments")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } } }
         }
     }
 
-    private func commentRow(author: String, verified: Bool, text: String, time: String, likes: Int, indent: Bool) -> some View {
-        HStack(alignment: .top, spacing: 10) {
-            AvatarView(handle: Platform.instagram.key(author))
-                .frame(width: indent ? 26 : 32, height: indent ? 26 : 32)
-            VStack(alignment: .leading, spacing: 2) {
-                HStack(spacing: 4) {
-                    Text(author).font(.footnote.weight(.semibold)).foregroundStyle(Color.nvInk)
-                    if verified { Image(systemName: "checkmark.seal.fill").font(.caption2).foregroundStyle(Color.nvSignal) }
-                }
-                Text(text).font(.footnote).foregroundStyle(Color.nvInk).fixedSize(horizontal: false, vertical: true)
-                HStack(spacing: 10) {
-                    if let rel = relativeTime(time) { Text(rel) }
-                    if likes > 0 { Text("\(likes) like\(likes == 1 ? "" : "s")") }
-                }
-                .font(.caption2)
-                .foregroundStyle(Color.nvMuted)
-            }
-            Spacer(minLength: 0)
-        }
-        .padding(.leading, indent ? 28 : 0)
-        .listRowBackground(Color.nvPaper)
-    }
-
-    private func relativeTime(_ iso: String) -> String? {
-        guard let date = parseISO8601(iso) else { return nil }
-        return date.formatted(.relative(presentation: .named))
+    private func row(_ comment: IGArchive.StoredComment, isReply: Bool) -> RetroCommentRow {
+        RetroCommentRow(author: comment.author, avatar: .stored(Platform.instagram.key(comment.author)), verified: comment.verified,
+                        text: comment.text, age: IGTime.short(comment.time) ?? "", likes: Retro.likes(comment.likes),
+                        isReply: isReply, platform: .instagram)
     }
 }

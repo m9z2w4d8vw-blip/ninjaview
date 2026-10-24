@@ -407,10 +407,8 @@ struct PostFeedScreen: View {
             if let new, new != feed.current { feed.focus(new) }
         }
         .onDisappear { feed.pausePlayback() }
-        .sheet(item: $comments) { request in
+        .fullScreenCover(item: $comments) { request in
             CommentsSheet(feed: feed, index: request.index) { handle in openProfile(handle) }
-                .presentationDetents([.medium, .large])
-                .presentationDragIndicator(.visible)
         }
     }
 

@@ -48,6 +48,13 @@ final class CommentsModel: ObservableObject {
         }
     }
 
+    /// The post's caption and who posted it, shown first the way Instagram did.
+    var caption: String? { feed.details[index]?.caption }
+    var author: String { feed.handle }
+    var authorAvatar: URL? { feed.avatarURL }
+    var platform: Platform { feed.platform }
+    var postAge: String { feed.item(at: index)?.date ?? "" }
+
     func start() async {
         guard !started else { return }
         started = true
@@ -152,6 +159,7 @@ final class CommentsModel: ObservableObject {
     }
 }
 
+/// A post's comments, laid out like Instagram's comments screen of 2016–2017 (see RetroComments).
 @MainActor
 struct CommentsSheet: View {
     @StateObject private var model: CommentsModel
@@ -164,73 +172,64 @@ struct CommentsSheet: View {
     }
 
     var body: some View {
-        NavigationStack {
-            content
-                .navigationTitle(title)
-                .navigationBarTitleDisplayMode(.inline)
-                .toolbar {
-                    ToolbarItem(placement: .confirmationAction) {
-                        Button("Done") { dismiss() }
+        RetroCommentsScreen(onBack: { dismiss() }) {
+            if let caption = model.caption, !caption.isEmpty {
+                RetroCommentRow(author: model.author, avatar: .url(model.authorAvatar), text: caption, age: model.postAge,
+                                isCaption: true, platform: model.platform, onOpenProfile: onOpenProfile)
+                    .padding(.horizontal, Retro.side)
+                    .padding(.vertical, 12)
+                RetroHairline()
+            }
+            if model.isLoading {
+                ProgressView()
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 40)
+            } else if model.comments.isEmpty {
+                VStack(spacing: 12) {
+                    Text(model.error ?? (model.note.isEmpty ? "No comments yet." : model.note))
+                        .font(.footnote)
+                        .foregroundStyle(Retro.gray)
+                        .multilineTextAlignment(.center)
+                    if model.error != nil {
+                        Button("Try again") { Task { await model.retry() } }
+                            .buttonStyle(OutlineButtonStyle())
                     }
                 }
-        }
-        .task { await model.start() }
-    }
-
-    private var title: String {
-        guard let label = model.countLabel, !label.isEmpty, label != "0" else { return "Comments" }
-        return label == "1" ? "1 comment" : "\(label) comments"
-    }
-
-    @ViewBuilder private var content: some View {
-        if model.isLoading {
-            ProgressView()
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .background(Color.nvPaper)
-        } else if model.comments.isEmpty {
-            VStack(spacing: 12) {
-                Text(model.error ?? (model.note.isEmpty ? "No comments yet." : model.note))
-                    .font(.footnote)
-                    .foregroundStyle(Color.nvMuted)
-                    .multilineTextAlignment(.center)
-                if model.error != nil {
-                    Button("Try again") { Task { await model.retry() } }
-                        .buttonStyle(OutlineButtonStyle())
-                }
-            }
-            .padding(32)
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .background(Color.nvPaper)
-        } else {
-            List {
+                .frame(maxWidth: .infinity)
+                .padding(32)
+            } else {
                 ForEach(model.comments) { comment in
                     CommentThread(comment: comment, model: model, onOpenProfile: onOpenProfile)
-                        .listRowBackground(Color.nvPaper)
-                        .listRowSeparatorTint(Color.nvRule)
-                        .listRowInsets(EdgeInsets(top: 10, leading: 16, bottom: 10, trailing: 16))
                         .onAppear { Task { await model.loadMoreIfNeeded(after: comment) } }
+                    RetroHairline(inset: Retro.side + Retro.replyIndent)
                 }
                 if model.isLoadingMore {
                     ProgressView()
                         .frame(maxWidth: .infinity)
-                        .listRowBackground(Color.nvPaper)
-                        .listRowSeparator(.hidden)
+                        .padding(.vertical, 16)
+                }
+                if let error = model.error {
+                    Text(error)
+                        .font(.footnote)
+                        .foregroundStyle(Retro.gray)
+                        .padding(.horizontal, Retro.side)
+                        .padding(.vertical, 8)
                 }
                 if !model.footnote.isEmpty {
                     Text(model.footnote)
                         .font(.footnote)
-                        .foregroundStyle(Color.nvMuted)
-                        .listRowBackground(Color.nvPaper)
-                        .listRowSeparator(.hidden)
+                        .foregroundStyle(Retro.gray)
+                        .padding(.horizontal, Retro.side)
+                        .padding(.vertical, 12)
                 }
             }
-            .listStyle(.plain)
-            .scrollContentBackground(.hidden)
-            .background(Color.nvPaper)
         }
+        .task { await model.start() }
     }
 }
 
+/// One comment and its replies. tik.ninja sends replies only when asked, so "View All N replies"
+/// comes right under the comment, and the replies appear above it once opened.
 @MainActor
 struct CommentThread: View {
     let comment: CommentItem
@@ -238,83 +237,36 @@ struct CommentThread: View {
     let onOpenProfile: (String) -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            CommentRow(comment: comment, isReply: false, onOpenProfile: onOpenProfile)
+        let open = model.expanded.contains(comment.index)
+        VStack(alignment: .leading, spacing: 0) {
+            RetroCommentRow(author: comment.handle, avatar: .url(comment.avatarURL), text: comment.text, age: comment.time,
+                            likes: Retro.likes(comment.likes), platform: model.platform, onOpenProfile: onOpenProfile)
+            if open {
+                ForEach(comment.replies) { reply in
+                    RetroCommentRow(author: reply.handle, avatar: .url(reply.avatarURL), text: reply.text, age: reply.time,
+                                    likes: Retro.likes(reply.likes), isReply: true, platform: model.platform, onOpenProfile: onOpenProfile)
+                        .padding(.leading, Retro.replyIndent)
+                        .padding(.top, 14)
+                }
+            }
             if let label = model.replyLabel(for: comment) {
-                Button {
+                RetroRepliesToggle(title: open ? "Hide replies" : Retro.viewReplies(label),
+                                   avatars: open ? [] : comment.replies.prefix(2).map { RetroAvatar.url($0.avatarURL) },
+                                   loading: model.loadingReplies.contains(comment.index)) {
                     Task { await model.toggleReplies(comment) }
-                } label: {
-                    HStack(spacing: 6) {
-                        Rectangle().fill(Color.nvRule).frame(width: 18, height: 1)
-                        Text(model.expanded.contains(comment.index) ? "Hide replies" : "View \(label)")
-                            .font(.mono(.caption, weight: .bold))
-                            .foregroundStyle(Color.nvSignal)
-                        if model.loadingReplies.contains(comment.index) {
-                            ProgressView().controlSize(.mini)
-                        }
-                    }
                 }
-                .buttonStyle(.borderless)
-                .padding(.leading, 42)
+                .padding(.leading, Retro.replyIndent)
+                .padding(.top, 12)
             }
-            if model.expanded.contains(comment.index) {
-                VStack(alignment: .leading, spacing: 10) {
-                    ForEach(comment.replies) { reply in
-                        CommentRow(comment: reply, isReply: true, onOpenProfile: onOpenProfile)
-                    }
-                    if comment.repliesMore {
-                        Button("View more replies") { Task { await model.moreReplies(comment) } }
-                            .buttonStyle(.borderless)
-                            .font(.mono(.caption, weight: .bold))
-                            .foregroundStyle(Color.nvSignal)
-                    }
+            if open && comment.repliesMore {
+                RetroRepliesToggle(title: "View more replies", loading: model.loadingReplies.contains(comment.index)) {
+                    Task { await model.moreReplies(comment) }
                 }
-                .padding(.leading, 42)
+                .padding(.leading, Retro.replyIndent)
+                .padding(.top, 10)
             }
         }
-    }
-}
-
-struct CommentRow: View {
-    let comment: CommentItem
-    let isReply: Bool
-    let onOpenProfile: (String) -> Void
-
-    var body: some View {
-        HStack(alignment: .top, spacing: 10) {
-            RemoteImage(comment.avatarURL, maxPixel: 120)
-                .frame(width: isReply ? 26 : 32, height: isReply ? 26 : 32)
-                .clipShape(Circle())
-                .accessibilityHidden(true)
-            VStack(alignment: .leading, spacing: 4) {
-                HStack(alignment: .firstTextBaseline, spacing: 8) {
-                    Button { onOpenProfile(comment.handle) } label: {
-                        Text("@\(comment.handle)")
-                            .font(.mono(.footnote, weight: .bold))
-                            .foregroundStyle(Color.nvInk)
-                            .lineLimit(1)
-                    }
-                    .buttonStyle(.borderless)
-                    .disabled(comment.handle.isEmpty)
-                    .accessibilityHint("Opens this profile")
-                    if !comment.time.isEmpty {
-                        Text(comment.time)
-                            .font(.caption)
-                            .foregroundStyle(Color.nvMuted)
-                    }
-                }
-                Text(comment.text)
-                    .font(.subheadline)
-                    .foregroundStyle(Color.nvInk)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .textSelection(.enabled)
-                if !comment.likes.isEmpty {
-                    Label(comment.likes, systemImage: "heart")
-                        .font(.caption)
-                        .foregroundStyle(Color.nvMuted)
-                        .labelStyle(CompactLabelStyle())
-                }
-            }
-        }
+        .padding(.horizontal, Retro.side)
+        .padding(.vertical, 12)
     }
 }

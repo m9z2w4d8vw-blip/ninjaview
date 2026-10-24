@@ -14,11 +14,17 @@ enum Diagnostics {
         let log = DebugLog.shared
         log.add(.app, "Exporting a debug report")
         var text = header()
-        for file in log.launchFiles(includePrevious: includePrevious) {
+        let files = log.launchFiles(includePrevious: includePrevious)
+        for file in files {
             let body = (try? String(contentsOf: file, encoding: .utf8)) ?? ""
             let label = file == log.sessionFile ? "This launch" : "Earlier launch"
             text += "\n===== \(label): \(file.lastPathComponent) =====\n"
             text += body.isEmpty ? "(nothing logged)\n" : body
+        }
+        if files.isEmpty {
+            // No log files turned up; what's still in memory is far better than a report without a log.
+            text += "\n===== This launch, from memory (no log files were found) =====\n"
+            text += log.entries.map { log.line(for: $0) }.joined(separator: "\n") + "\n"
         }
         let fileStamp = DateFormatter()
         fileStamp.locale = Locale(identifier: "en_US_POSIX")
@@ -122,6 +128,7 @@ enum Diagnostics {
             watching += ", resting until \(clock(until)) after \(watch.refusals) refused rounds in a row"
         }
         lines.append(watching)
+        lines.append(TikGate.shared.summary)
         let settings = AppSettings.shared
         lines.append("offline settings: download profiles you open \(onOff(settings.prefetch)), comments \(onOff(settings.saveComments)), follower lists \(onOff(settings.saveLists))")
         return lines
@@ -228,7 +235,7 @@ enum Diagnostics {
         let lower = shown.lowercased()
         let answers = answerStatuses(trace)
         if lower.contains("(http 403)") || lower.contains("forbidden") || answers.contains(403) {
-            out.append("HTTP 403 here means tik.ninja refused the session this page was using. Every hidden page has its own session, and a page starts a new one on its own (up to twice per lookup) when this happens. A 403 that survives that suggests tik.ninja is refusing new sessions from this connection for now.")
+            out.append("HTTP 403 here means tik.ninja refused the session this page was using. A page starts a new session on its own (up to twice per lookup, after 3 and then 10 seconds), and three refusals in a minute hold every page for 45 seconds. A 403 that survives that means tik.ninja is refusing this connection for now, and waiting a few minutes is what helps.")
         }
         if lower.contains("get past the check") {
             out.append("There's no search box on the page, so tik.ninja is most likely showing a verification page (Cloudflare) or its layout changed. \"the page right after\" lists any verification elements and the page's visible text. Show page lets you get past a check.")

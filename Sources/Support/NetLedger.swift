@@ -77,8 +77,10 @@ final class NetLedger {
         events.append(event)
         if events.count > cap + 500 { events.removeFirst(events.count - cap) }
         total += 1
+        if status == 403 && event.endpoint.hasPrefix("/api") { TikGate.shared.refusedSession() }
         guard status == 429 else { return }
         refusedTotal += 1
+        TikGate.shared.refused(retryAfter: Int(retryAfter ?? "") ?? 10)
         if firstRefusal == nil { firstRefusal = event.date }
         lastRefusal = event.date
         if let retryAfter, !retryAfter.isEmpty { lastRetryAfter = retryAfter }
@@ -90,6 +92,17 @@ final class NetLedger {
     }
 
     // MARK: Reading
+
+    /// API calls (fetches and XHRs to /api…) answered in the last `seconds`, for the shared allowance.
+    func apiCalls(within seconds: TimeInterval) -> Int {
+        let start = Date().addingTimeInterval(-seconds)
+        var count = 0
+        for event in events.reversed() {
+            if event.date < start { break }
+            if event.endpoint.hasPrefix("/api") && (event.kind == "fetch" || event.kind == "xhr") { count += 1 }
+        }
+        return count
+    }
 
     /// The events in the `seconds` up to `end`, oldest first.
     func window(_ seconds: TimeInterval, before end: Date = Date()) -> [Event] {

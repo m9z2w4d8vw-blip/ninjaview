@@ -30,6 +30,7 @@ If the build fails, open the failed run. The **Summarize compiler errors** step 
 - The icon tabs switch between posts, reposts and stories. Grids load more as you scroll, and pulling down refreshes.
 - Tap a post to open it in a list of posts, the way Instagram used to show them: the post you tapped, then the rest below it. Media stays inside the post at full width; nothing opens full screen. The video nearest the middle of the screen plays, muted until you tap it; the button in its corner pauses it. Swipe sideways through photo posts.
 - Under each post: comments (with reply threads), share, audio (through tik.ninja's own download) and save to Photos. The ... menu has the same, plus copying the caption. Tapping an @mention in a caption opens that profile.
+- Comments open in a screen laid out like Instagram's of 2016–2017, for TikTok and Instagram alike: the caption first, then each comment with its name in bold and the text running on after it, its age and likes underneath and a heart on the right, and replies behind **View All N replies**. Tap a picture or an @mention to open that profile, and press and hold a comment to copy it. The *Add a comment…* bar is only drawn: NinjaView can't post.
 - Tapping a follower, a followed account or a commenter opens their profile.
 
 ### Comments and replies in archives
@@ -85,7 +86,7 @@ The TrollStore build is fakesigned (with `ldid`, in the workflow) carrying the T
 
 ### Offline copy for the session
 
-Opening a profile starts a background download of everything on it: posts, reposts, stories and highlights (video files, photos and covers), comments with their reply threads, follower and following lists, and analytics. A line under the profile's buttons shows progress. Posts that have finished play from the phone. The copy is erased when NinjaView closes. It runs on its own hidden page, one profile at a time, newest first. Turn it off, or leave out comments or lists, in **Settings > Offline**.
+Opening a profile starts a background download of its posts, reposts, stories and highlights (video files, photos and covers) and its analytics. Comments, replies and follower lists aren't part of it: they load live when you open them, so the copy asks tik.ninja for only a few lists. A line under the profile's buttons shows progress. Posts that have finished play from the phone. The copy is erased when NinjaView closes. It runs on its own hidden page, one profile at a time, newest first. Turn it off in **Settings > Offline**; the comments and follower-list switches there decide what archives keep.
 
 ### Archives
 
@@ -95,7 +96,7 @@ Opening a profile starts a background download of everything on it: posts, repos
 - **Update archive** fetches new posts. Posts that were deleted from the account stay in the archive.
 - **Files** opens the archive in the Files app (On My iPhone > NinjaView > Archives). The menu can export it as a .zip, or delete it.
 
-Limits per profile: 300 posts per tab for a session copy, 5,000 for an archive, 400 comments and 60 reply threads per post, and 2,000 accounts per follower list.
+Limits per profile: 300 posts per tab for a session copy, 5,000 for an archive; archives also keep up to 400 comments and 150 reply threads per post and 2,000 accounts per follower list.
 
 ## How it works
 
@@ -125,6 +126,8 @@ In the debug log, lines from a hidden page start with its name, like `[P3 screen
 Every hidden tik.ninja page has its own session (its own cookie jar), so one page loading tik.ninja can't knock out the session another page is using; Cloudflare's clearance cookie is carried into each new page. When tik.ninja refuses a page's session (HTTP 403: "⚠ Forbidden" or "The operation failed for an operation-specific reason"), the page starts a new session and tries again on its own. A page whose session went 18 minutes without an answer (the phone slept, say) starts a new one before it's used again: a profile on screen when the app comes back, or when you return to it; an offline copy or archive starts over on a fresh page and skips what it already saved. A preloaded page that waited more than 10 minutes is thrown away.
 
 Errors in tik.ninja's status line are recognized by its error styling and by the page's own refused requests, so a refused lookup ends in under a second with the reason (rate limit, refused session, not found) instead of waiting 30 seconds. A list tik.ninja refuses shows why with Try again instead of looking finished, and copies wait out Retry-After and ask again rather than saving it as empty or skipping posts.
+
+All hidden pages share one allowance for tik.ninja's API. Whatever is on screen may use up to 5 calls in 10 seconds and 12 a minute; notification checks and background copies get less, so they never crowd out what you're looking at. After a 429, every page holds its requests for as long as tik.ninja asks (usually 10 seconds), and three refused sessions (403) in a minute hold them for 45 seconds. A page that has just loaded waits a moment before its first request, and a page starting a new session after a 403 waits 3 seconds first (10 the second time). A profile that's waiting says so while it loads, and the **traffic** area logs who waited and why.
 
 ## Project layout
 

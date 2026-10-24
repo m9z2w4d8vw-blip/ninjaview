@@ -63,12 +63,12 @@ struct SettingsView: View {
 
                 Section {
                     Toggle("Download profiles you open", isOn: $settings.prefetch)
-                    Toggle("Include comments", isOn: $settings.saveComments)
-                    Toggle("Include followers and following", isOn: $settings.saveLists)
+                    Toggle("Archives include comments", isOn: $settings.saveComments)
+                    Toggle("Archives include followers and following", isOn: $settings.saveLists)
                 } header: {
                     Text("Offline")
                 } footer: {
-                    Text("Opening a profile saves its posts, videos, photos, comments and their replies in the background so they open instantly. That copy is erased when NinjaView closes; Archive on a profile keeps one. This can use a lot of cellular data.")
+                    Text("Opening a profile saves its posts, videos and photos in the background so they open instantly; comments and follower lists load when you open them. That copy is erased when NinjaView closes. Archive on a profile keeps a copy, with comments, replies and follower lists when the switches above are on. This can use a lot of cellular data.")
                 }
 
                 Section {

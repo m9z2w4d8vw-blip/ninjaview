@@ -265,7 +265,8 @@ final class CrawlCenter: ObservableObject {
         }
         await engine.closeItem()
 
-        if AppSettings.shared.saveLists {
+        // Session copies leave follower lists out: they're dozens of calls each and load when you open them.
+        if crawl.mode == .archive && AppSettings.shared.saveLists {
             for tab in [ProfileTab.followers, .following] {
                 if shouldYield(crawl) {
                     stop(crawl, store)
@@ -434,8 +435,8 @@ final class CrawlCenter: ObservableObject {
         if crawl.mode == .archive, let cached = ProfileStore.session.loadPost(crawl.handle, tab, key), cached.detail != nil,
            Self.copyFiles(of: cached, from: ProfileStore.session.postFolder(crawl.handle, tab, key), to: folder) {
             store.savePost(cached, handle: crawl.handle, complete: true)
-            // The temporary copy opens fewer reply threads; fill in the rest for the archive.
-            if AppSettings.shared.saveComments && cached.unopenedThreads > 0 {
+            // Session copies don't keep comments (older ones kept fewer reply threads): fetch them for the archive.
+            if AppSettings.shared.saveComments && (cached.unopenedThreads > 0 || (cached.comments.isEmpty && cached.detail?.hasComments == true)) {
                 await refreshReplies(cached, item: item, tab: tab, crawl: crawl, engine: engine)
             }
             return
@@ -456,7 +457,7 @@ final class CrawlCenter: ObservableObject {
                     post.photoFiles.append(file)
                 }
             }
-            if detail.hasComments && AppSettings.shared.saveComments {
+            if crawl.mode == .archive && detail.hasComments && AppSettings.shared.saveComments {
                 let limit = crawl.mode == .archive ? CrawlLimits.threadsPerPost : CrawlLimits.sessionThreadsPerPost
                 let saved = await collectComments(engine, threadLimit: limit)
                 post.comments = saved.comments
